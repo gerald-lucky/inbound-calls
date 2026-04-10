@@ -3,42 +3,198 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI Call Agent — Knowledge Base</title>
+  <title>AI Call Agent</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="container">
-    <header>
-      <h1>AI Call Agent</h1>
-      <p class="subtitle">Knowledge Base Manager</p>
-    </header>
+  <nav class="sidebar">
+    <div class="brand">
+      <span class="brand-icon">📞</span>
+      <span class="brand-name">Call Agent</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#" data-tab="dashboard" class="active">Dashboard</a></li>
+      <li><a href="#" data-tab="routing">Routing</a></li>
+      <li><a href="#" data-tab="calls">Calls</a></li>
+      <li><a href="#" data-tab="leads">Leads</a></li>
+      <li><a href="#" data-tab="knowledge">Knowledge Base</a></li>
+    </ul>
+  </nav>
 
-    <section class="upload-section">
-      <h2>Upload Document</h2>
-      <p class="hint">Supported formats: PDF, DOCX, TXT, Markdown (max 10 MB)</p>
-      <form id="upload-form">
-        <div class="file-drop" id="file-drop">
-          <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md" hidden />
-          <label for="file-input" class="drop-label">
-            <span class="drop-icon">📄</span>
-            <span id="file-name">Click to choose a file or drag &amp; drop</span>
-          </label>
+  <main class="content">
+
+    <!-- ── Dashboard ─────────────────────────────────────────── -->
+    <section id="tab-dashboard" class="tab active">
+      <h1>Dashboard</h1>
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card" id="stat-total">
+          <div class="stat-value">—</div>
+          <div class="stat-label">Total Calls</div>
         </div>
-        <button type="submit" id="upload-btn" disabled>Upload &amp; Process</button>
-      </form>
-      <div id="upload-status" class="status-msg" hidden></div>
+        <div class="stat-card" id="stat-last7">
+          <div class="stat-value">—</div>
+          <div class="stat-label">Last 7 Days</div>
+        </div>
+        <div class="stat-card" id="stat-unique">
+          <div class="stat-value">—</div>
+          <div class="stat-label">Unique Callers</div>
+        </div>
+        <div class="stat-card" id="stat-duration">
+          <div class="stat-value">—</div>
+          <div class="stat-label">Avg Duration</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Recent Calls</h2>
+          <button class="btn-secondary" id="dash-refresh">Refresh</button>
+        </div>
+        <div id="recent-calls-list"><p class="loading">Loading…</p></div>
+      </div>
     </section>
 
-    <section class="docs-section">
-      <div class="docs-header">
-        <h2>Uploaded Documents</h2>
-        <button id="refresh-btn" class="btn-secondary">Refresh</button>
+    <!-- ── Routing ────────────────────────────────────────────── -->
+    <section id="tab-routing" class="tab">
+      <div class="page-header">
+        <h1>Routing</h1>
+        <button class="btn-primary" id="new-config-btn">+ New Agent</button>
       </div>
-      <div id="docs-list">
-        <p class="loading">Loading…</p>
+      <p class="page-subtitle">Each row maps a Twilio number to an AI agent persona. Set your Quo/OpenPhone number to forward to the Twilio number listed here.</p>
+
+      <div class="card" id="routing-list-card">
+        <div id="routing-list"><p class="loading">Loading…</p></div>
+      </div>
+
+      <!-- Create / Edit modal -->
+      <div class="modal-backdrop" id="config-modal-backdrop" hidden>
+        <div class="modal">
+          <div class="modal-header">
+            <h2 id="modal-title">New Agent</h2>
+            <button class="modal-close" id="modal-close">✕</button>
+          </div>
+          <form id="config-form">
+            <input type="hidden" id="config-id" />
+
+            <div class="form-grid">
+              <div class="field full">
+                <label>Agent Name <span class="req">*</span></label>
+                <input type="text" id="f-name" placeholder="Sales Line" required />
+              </div>
+              <div class="field">
+                <label>Twilio Number <span class="req">*</span></label>
+                <input type="text" id="f-twilio" placeholder="+15551234567" required />
+                <small>Must match your Twilio phone number exactly.</small>
+              </div>
+              <div class="field">
+                <label>Quo / OpenPhone Number</label>
+                <input type="text" id="f-quo" placeholder="+15559876543" />
+                <small>The number your clients actually dial (for your reference).</small>
+              </div>
+              <div class="field full">
+                <label>System Prompt <span class="req">*</span></label>
+                <textarea id="f-prompt" rows="5" placeholder="You are a helpful assistant for Acme Corp..." required></textarea>
+              </div>
+              <div class="field full">
+                <label>Greeting</label>
+                <input type="text" id="f-greeting" placeholder="Hello! Thanks for calling. How can I help you today?" />
+              </div>
+              <div class="field">
+                <label>ElevenLabs Voice ID</label>
+                <input type="text" id="f-voice" placeholder="21m00Tcm4TlvDq8ikWAM" />
+                <small>Leave blank to use the global default.</small>
+              </div>
+              <div class="field">
+                <label>Status</label>
+                <select id="f-active">
+                  <option value="true">Active</option>
+                  <option value="false">Inactive</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn-secondary" id="modal-cancel">Cancel</button>
+              <button type="submit" class="btn-primary" id="modal-save">Save Agent</button>
+            </div>
+          </form>
+        </div>
       </div>
     </section>
-  </div>
+
+    <!-- ── Calls ──────────────────────────────────────────────── -->
+    <section id="tab-calls" class="tab">
+      <h1>Call Log</h1>
+      <div class="filter-bar">
+        <select id="calls-filter-config">
+          <option value="">All agents</option>
+        </select>
+        <button class="btn-secondary" id="calls-refresh">Refresh</button>
+      </div>
+
+      <div class="card">
+        <div id="calls-list"><p class="loading">Loading…</p></div>
+      </div>
+
+      <!-- Transcript drawer -->
+      <div class="drawer-backdrop" id="transcript-backdrop" hidden>
+        <div class="drawer">
+          <div class="drawer-header">
+            <div>
+              <h2 id="drawer-title">Transcript</h2>
+              <div class="drawer-meta" id="drawer-meta"></div>
+            </div>
+            <button class="modal-close" id="drawer-close">✕</button>
+          </div>
+          <div class="transcript-body" id="transcript-body"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Leads ──────────────────────────────────────────────── -->
+    <section id="tab-leads" class="tab">
+      <h1>Leads</h1>
+      <div class="filter-bar">
+        <select id="leads-filter-config">
+          <option value="">All agents</option>
+        </select>
+        <button class="btn-secondary" id="leads-refresh">Refresh</button>
+      </div>
+      <div class="card">
+        <div id="leads-list"><p class="loading">Loading…</p></div>
+      </div>
+    </section>
+
+    <!-- ── Knowledge Base ─────────────────────────────────────── -->
+    <section id="tab-knowledge" class="tab">
+      <h1>Knowledge Base</h1>
+      <div class="card">
+        <h2>Upload Document</h2>
+        <p class="hint">Supported: PDF, DOCX, TXT, Markdown (max 10 MB)</p>
+        <form id="upload-form">
+          <div class="file-drop" id="file-drop">
+            <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md" hidden />
+            <label for="file-input" class="drop-label">
+              <span class="drop-icon">📄</span>
+              <span id="file-name">Click to choose or drag &amp; drop</span>
+            </label>
+          </div>
+          <button type="submit" id="upload-btn" disabled>Upload &amp; Process</button>
+        </form>
+        <div id="upload-status" class="status-msg" hidden></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Documents</h2>
+          <button class="btn-secondary" id="docs-refresh">Refresh</button>
+        </div>
+        <div id="docs-list"><p class="loading">Loading…</p></div>
+      </div>
+    </section>
+
+  </main>
+
   <script src="app.js"></script>
 </body>
 </html>

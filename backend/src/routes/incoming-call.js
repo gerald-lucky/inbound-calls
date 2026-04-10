@@ -2,20 +2,46 @@
 
 const express = require('express');
 const router = express.Router();
+const agentConfigs = require('../services/agent-configs');
 
-// POST /incoming-call — Twilio calls this webhook when an inbound call arrives.
-// We respond with TwiML that tells Twilio to open a bidirectional Media Stream
-// to our WebSocket endpoint (/media-stream).
-router.post('/', (req, res) => {
+// POST /incoming-call — Twilio webhook for every inbound call.
+// 1. Look up the agent config for the dialled Twilio number.
+// 2. Return TwiML that opens a bidirectional Media Stream to /media-stream,
+//    passing call metadata as query params so the WS handler can use it.
+router.post('/', async (req, res) => {
   const serverUrl = process.env.SERVER_URL;
   if (!serverUrl) {
-    console.error('[incoming-call] SERVER_URL env var is not set');
-    return res.status(500).send('Server misconfigured: SERVER_URL not set');
+    console.error('[incoming-call] SERVER_URL is not set');
+    return res.status(500).send('Server misconfigured');
   }
 
-  // Strip any trailing slash for safety
-  const base = serverUrl.replace(/\/$/, '');
-  const wsUrl = base.replace(/^http/, 'wss') + '/media-stream';
+  // Twilio provides these in the POST body
+  const callSid     = req.body.CallSid  || '';
+  const callerNum   = req.body.From     || 'unknown';
+  const twilioNum   = req.body.To       || '';
+
+  console.log(`[incoming-call] ${callerNum} → ${twilioNum} (${callSid})`);
+
+  // Look up which agent config is assigned to this Twilio number
+  const config = await agentConfigs.findByTwilioNumber(twilioNum);
+  if (config) {
+    console.log(`[incoming-call] Using agent config: "${config.name}" (${config.id})`);
+  } else {
+    console.log('[incoming-call] No agent config found — will use env-var defaults');
+  }
+
+  const base  = serverUrl.replace(/\/$/, '');
+  const wsBase = base.replace(/^http/, 'wss');
+
+  // Embed metadata as query params — the WS upgrade handler reads these
+  const params = new URLSearchParams({
+    callSid,
+    callerNumber: callerNum,
+    twilioNumber: twilioNum,
+    configId: config?.id || '',
+  });
+
+  const wsUrl = `${wsBase}/media-stream?${params.toString()}`;
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -25,7 +51,6 @@ router.post('/', (req, res) => {
 </Response>`;
 
   res.type('text/xml').send(twiml);
-  console.log(`[incoming-call] Answered call → streaming to ${wsUrl}`);
 });
 
 module.exports = router;

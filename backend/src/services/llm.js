@@ -13,38 +13,37 @@ const SENTENCE_END = /[.!?]\s+|[.!?]$/;
 /**
  * LLMService handles a single conversation with Claude Sonnet 4.6.
  *
+ * @param {string} systemPrompt - Per-agent system prompt (from agent config or env var).
+ *
  * Events emitted:
- *   'sentence'  (text: string)   — a complete sentence ready for TTS
- *   'done'      (fullText: string) — full response text, conversation updated
+ *   'sentence'  (text: string)     — complete sentence ready for TTS
+ *   'done'      (fullText: string) — full response committed to history
  *   'error'     (err: Error)
  */
 class LLMService extends EventEmitter {
-  constructor() {
+  constructor(systemPrompt) {
     super();
+    this._systemPrompt = systemPrompt ||
+      'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
     /** @type {Array<{role: string, content: string}>} */
     this.conversationHistory = [];
   }
 
   /**
-   * Process a caller utterance: retrieve context, stream Claude's response,
+   * Process a caller utterance: retrieve RAG context, stream Claude's response,
    * and emit sentence chunks as they become available.
    *
-   * @param {string} utterance - The caller's transcribed speech.
-   * @param {AbortSignal} signal - AbortSignal to cancel mid-stream (barge-in).
+   * @param {string} utterance
+   * @param {AbortSignal} signal
    */
   async respond(utterance, signal) {
-    // Add the user turn to history
     this.conversationHistory.push({ role: 'user', content: utterance });
 
-    // Retrieve relevant knowledge base context
     const context = await knowledgeBase.search(utterance);
 
     const systemPrompt = [
-      process.env.AGENT_SYSTEM_PROMPT ||
-        'You are a helpful assistant. Answer concisely since your responses will be read aloud.',
-      context
-        ? `\n\nRelevant knowledge base information:\n${context}`
-        : '',
+      this._systemPrompt,
+      context ? `\n\nRelevant knowledge base information:\n${context}` : '',
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally.',
     ].join('');
 
@@ -73,30 +72,22 @@ class LLMService extends EventEmitter {
           sentenceBuffer += token;
           fullResponse += token;
 
-          // Flush complete sentences to TTS immediately for low latency
           const match = sentenceBuffer.search(SENTENCE_END);
           if (match !== -1) {
             const sentence = sentenceBuffer.slice(0, match + 1).trim();
             sentenceBuffer = sentenceBuffer.slice(match + 1);
-            if (sentence) {
-              this.emit('sentence', sentence);
-            }
+            if (sentence) this.emit('sentence', sentence);
           }
         }
       }
 
-      // Flush any remaining text as a final sentence
       const remainder = sentenceBuffer.trim();
       if (remainder && !signal?.aborted) {
         this.emit('sentence', remainder);
       }
 
       if (!signal?.aborted) {
-        // Add assistant turn to history
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: fullResponse,
-        });
+        this.conversationHistory.push({ role: 'assistant', content: fullResponse });
         this.emit('done', fullResponse);
       }
     } catch (err) {
@@ -110,8 +101,54 @@ class LLMService extends EventEmitter {
   }
 
   /**
-   * Reset conversation history (e.g. after hang-up).
+   * Non-blocking lead extraction: after a turn completes, ask Claude
+   * whether the caller provided contact information worth capturing.
+   * Returns null if no lead was detected, or { name, email, notes } if one was.
+   *
+   * This is intentionally a separate, non-streaming call so it never
+   * affects call latency — it runs entirely in the background.
+   *
+   * @param {string} callerNumber
+   * @returns {Promise<{name?:string, email?:string, notes:string}|null>}
    */
+  async tryExtractLead(callerNumber) {
+    if (this.conversationHistory.length < 2) return null;
+
+    const transcript = this.conversationHistory
+      .map((m) => `${m.role === 'user' ? 'Caller' : 'Agent'}: ${m.content}`)
+      .join('\n');
+
+    try {
+      const response = await anthropic.messages.create({
+        model: MODEL,
+        max_tokens: 200,
+        system:
+          'You are a lead extraction assistant. Given a call transcript, determine if the caller provided contact information or expressed clear interest in a product or service. Respond with valid JSON only: {"is_lead": true/false, "name": "...", "email": "...", "notes": "..."}. Use null for missing fields. Keep notes under 100 characters.',
+        messages: [
+          {
+            role: 'user',
+            content: `Caller phone: ${callerNumber}\n\nTranscript:\n${transcript}`,
+          },
+        ],
+      });
+
+      const raw = response.content[0]?.text?.trim();
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      if (!parsed.is_lead) return null;
+
+      return {
+        name:  parsed.name  || null,
+        email: parsed.email || null,
+        notes: parsed.notes || null,
+      };
+    } catch {
+      // Lead extraction is best-effort; failures are silent
+      return null;
+    }
+  }
+
   reset() {
     this.conversationHistory = [];
   }

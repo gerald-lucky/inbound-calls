@@ -18,10 +18,13 @@ const TTS_URL = (voiceId) =>
  *   'error'  (err: Error)
  */
 class TTSService extends EventEmitter {
-  constructor() {
+  /**
+   * @param {string} [voiceId] - ElevenLabs voice ID. Defaults to ELEVENLABS_VOICE_ID env var.
+   */
+  constructor(voiceId) {
     super();
     this._ws = null;
-    this._voiceId = process.env.ELEVENLABS_VOICE_ID;
+    this._voiceId = voiceId || process.env.ELEVENLABS_VOICE_ID;
     this._speaking = false;
   }
 
