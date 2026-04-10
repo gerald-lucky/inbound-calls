@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Call Agent — Knowledge Base</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>AI Call Agent</h1>
+      <p class="subtitle">Knowledge Base Manager</p>
+    </header>
+
+    <section class="upload-section">
+      <h2>Upload Document</h2>
+      <p class="hint">Supported formats: PDF, DOCX, TXT, Markdown (max 10 MB)</p>
+      <form id="upload-form">
+        <div class="file-drop" id="file-drop">
+          <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md" hidden />
+          <label for="file-input" class="drop-label">
+            <span class="drop-icon">📄</span>
+            <span id="file-name">Click to choose a file or drag &amp; drop</span>
+          </label>
+        </div>
+        <button type="submit" id="upload-btn" disabled>Upload &amp; Process</button>
+      </form>
+      <div id="upload-status" class="status-msg" hidden></div>
+    </section>
+
+    <section class="docs-section">
+      <div class="docs-header">
+        <h2>Uploaded Documents</h2>
+        <button id="refresh-btn" class="btn-secondary">Refresh</button>
+      </div>
+      <div id="docs-list">
+        <p class="loading">Loading…</p>
+      </div>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
