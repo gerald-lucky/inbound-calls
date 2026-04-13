@@ -4,6 +4,7 @@ const TranscriptionService = require('./services/transcription');
 const LLMService = require('./services/llm');
 const TTSService = require('./services/tts');
 const callLogger = require('./services/call-logger');
+const parkData = require('./services/park-data');
 
 /**
  * CallSession manages the complete lifecycle of one inbound phone call.
@@ -40,9 +41,9 @@ class CallSession {
       "Hello! Thanks for calling. How can I help you today?";
     this._voiceId      = cfg?.voice_id      || process.env.ELEVENLABS_VOICE_ID;
 
-    // Services (voice ID injected at construction)
+    // Services (fully initialized once caller context is fetched in _logCallStart)
     this._transcription = new TranscriptionService();
-    this._llm           = new LLMService(this._systemPrompt);
+    this._llm           = null;  // created after caller context fetch
     this._tts           = new TTSService(this._voiceId);
 
     this._isSpeaking          = false;
@@ -78,8 +79,8 @@ class CallSession {
         case 'start':
           this._streamSid = msg.start.streamSid;
           console.log(`[call-session] Stream started: ${this._streamSid}`);
-          // Log call start to DB, then play greeting
-          this._logCallStart().then(() => {
+          // Log call start and fetch caller context, then play greeting
+          this._initCall().then(() => {
             setTimeout(() => this._speak(this._greeting), 500);
           });
           break;
@@ -155,6 +156,7 @@ class CallSession {
   // ─── Core pipeline ────────────────────────────────────────────────────────
 
   async _handleUtterance(text) {
+    if (!this._llm) return;  // still initializing (caller context fetch in progress)
     console.log(`[call-session] Caller said: "${text}"`);
     this._processingUtterance = true;
 
@@ -234,13 +236,20 @@ class CallSession {
 
   // ─── DB helpers ───────────────────────────────────────────────────────────
 
-  async _logCallStart() {
-    this._callDbId = await callLogger.startCall({
-      callSid:       this._callSid,
-      agentConfigId: this._agentConfig?.id || null,
-      twilioNumber:  this._twilioNumber,
-      callerNumber:  this._callerNumber,
-    });
+  async _initCall() {
+    // Log the call to the DB and fetch caller context in parallel
+    const [, callerContext] = await Promise.all([
+      callLogger.startCall({
+        callSid:       this._callSid,
+        agentConfigId: this._agentConfig?.id || null,
+        twilioNumber:  this._twilioNumber,
+        callerNumber:  this._callerNumber,
+      }).then((id) => { this._callDbId = id; }),
+      parkData.buildCallerContext(this._callerNumber),
+    ]);
+
+    // Create the LLM with the pre-fetched caller context
+    this._llm = new LLMService(this._systemPrompt, callerContext);
   }
 
   /**
@@ -298,7 +307,7 @@ class CallSession {
     }
     this._transcription.close();
     this._tts.abort();
-    this._llm.reset();
+    if (this._llm) this._llm.reset();
     this._isSpeaking = false;
     this._processingUtterance = false;
 

@@ -24,7 +24,6 @@ One host, one URL. Railway runs your Node.js server which handles:
    ELEVENLABS_API_KEY=
    ELEVENLABS_VOICE_ID=
    ANTHROPIC_API_KEY=
-   OPENAI_API_KEY=
    SUPABASE_URL=
    SUPABASE_SERVICE_ROLE_KEY=
    AGENT_SYSTEM_PROMPT=
@@ -55,7 +54,8 @@ npx ngrok http 3000
 
 ## Supabase migrations
 
-Run both files in your Supabase project's SQL editor (Dashboard → SQL Editor):
+Run all three files in order in your Supabase project's SQL editor (Dashboard → SQL Editor):
 
 1. `supabase/migrations/001_initial.sql`
 2. `supabase/migrations/002_routing_and_analytics.sql`
+3. `supabase/migrations/003_park_schema.sql`

@@ -12,7 +12,8 @@ function showTab(name) {
   if (name === 'routing')   loadRouting();
   if (name === 'calls')     loadCalls();
   if (name === 'leads')     loadLeads();
-  if (name === 'knowledge') loadDocs();
+  if (name === 'tenants')  loadTenants();
+  if (name === 'payments') loadPayments();
 }
 
 navLinks.forEach((a) =>
@@ -367,99 +368,223 @@ async function loadLeads() {
 document.getElementById('leads-refresh').addEventListener('click', loadLeads);
 document.getElementById('leads-filter-config').addEventListener('change', loadLeads);
 
-// ── Knowledge Base ────────────────────────────────────────────────────────────
+// ── Tenants ───────────────────────────────────────────────────────────────────
 
-const fileInput   = document.getElementById('file-input');
-const fileNameEl  = document.getElementById('file-name');
-const uploadBtn   = document.getElementById('upload-btn');
-const uploadForm  = document.getElementById('upload-form');
-const statusEl    = document.getElementById('upload-status');
-const fileDrop    = document.getElementById('file-drop');
+let _tenants = [];
 
-fileInput.addEventListener('change', () => {
-  const f = fileInput.files[0];
-  fileNameEl.textContent = f ? f.name : 'Click to choose or drag & drop';
-  uploadBtn.disabled = !f;
-});
-
-fileDrop.addEventListener('dragover', (e) => { e.preventDefault(); fileDrop.classList.add('drag-over'); });
-fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('drag-over'));
-fileDrop.addEventListener('drop', (e) => {
-  e.preventDefault();
-  fileDrop.classList.remove('drag-over');
-  const f = e.dataTransfer.files[0];
-  if (f) {
-    const dt = new DataTransfer();
-    dt.items.add(f);
-    fileInput.files = dt.files;
-    fileInput.dispatchEvent(new Event('change'));
-  }
-});
-
-uploadForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const f = fileInput.files[0];
-  if (!f) return;
-  setStatus('info', `Processing "${f.name}"…`);
-  uploadBtn.disabled = true;
-  const fd = new FormData();
-  fd.append('file', f);
-  try {
-    const res = await fetch('/api/documents', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) { setStatus('error', data.error || 'Upload failed'); return; }
-    setStatus('success', `"${data.filename}" uploaded — ${data.chunkCount} chunks indexed.`);
-    uploadForm.reset();
-    fileNameEl.textContent = 'Click to choose or drag & drop';
-    loadDocs();
-  } catch (err) {
-    setStatus('error', err.message);
-  } finally {
-    uploadBtn.disabled = !fileInput.files[0];
-  }
-});
-
-async function loadDocs() {
-  const el = document.getElementById('docs-list');
+async function loadTenants() {
+  const el = document.getElementById('tenants-list');
   el.innerHTML = '<p class="loading">Loading…</p>';
   try {
-    const docs = await apiFetch('/api/documents');
-    if (!docs.length) { el.innerHTML = '<p class="empty">No documents yet.</p>'; return; }
-    const rows = docs.map((d) => `
+    _tenants = await apiFetch('/api/tenants');
+    populateTenantFilter();
+    if (!_tenants.length) {
+      el.innerHTML = '<p class="empty">No tenants yet. Click "+ Add Tenant" to get started.</p>';
+      return;
+    }
+    const rows = _tenants.map((t) => `
       <tr>
-        <td>${esc(d.filename)}</td>
-        <td><span class="badge badge-blue">${d.chunk_count}</span></td>
-        <td>${fmtDate(d.created_at)}</td>
-        <td><button class="btn-danger delete-doc" data-id="${d.id}" data-name="${esc(d.filename)}">Delete</button></td>
+        <td>${esc(t.first_name)} ${esc(t.last_name)}</td>
+        <td>${esc(t.lot_number)}</td>
+        <td class="number-cell">$${Number(t.lot_rent_amount).toFixed(2)}/mo</td>
+        <td>${fmtDate(t.move_in_date)}</td>
+        <td class="${Number(t.balance_due) > 0 ? 'text-danger' : ''}">$${Number(t.balance_due).toFixed(2)}</td>
+        <td class="number-cell">${esc(t.phone_number)}</td>
+        <td>${esc(t.email || '—')}</td>
+        <td>
+          <button class="btn-link edit-tenant" data-id="${t.id}">Edit</button>
+          &nbsp;
+          <button class="btn-danger delete-tenant" data-id="${t.id}" data-name="${esc(t.first_name + ' ' + t.last_name)}">Delete</button>
+        </td>
       </tr>`).join('');
-
     el.innerHTML = `<table>
-      <thead><tr><th>Filename</th><th>Chunks</th><th>Uploaded</th><th></th></tr></thead>
+      <thead><tr>
+        <th>Name</th><th>Lot</th><th>Rent</th><th>Move-in</th><th>Balance</th><th>Phone</th><th>Email</th><th></th>
+      </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+    el.querySelectorAll('.edit-tenant').forEach((btn) =>
+      btn.addEventListener('click', () => openTenantModal(btn.dataset.id)));
+    el.querySelectorAll('.delete-tenant').forEach((btn) =>
+      btn.addEventListener('click', () => deleteTenant(btn.dataset.id, btn.dataset.name)));
+  } catch (err) {
+    el.innerHTML = `<p class="empty">Error: ${esc(err.message)}</p>`;
+  }
+}
 
-    el.querySelectorAll('.delete-doc').forEach((btn) =>
+function populateTenantFilter() {
+  const sel = document.getElementById('payments-filter-tenant');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All tenants</option>' +
+    _tenants.map((t) => `<option value="${t.id}">${esc(t.first_name + ' ' + t.last_name)} — Lot ${esc(t.lot_number)}</option>`).join('');
+  sel.value = current;
+
+  const pf = document.getElementById('pf-tenant');
+  const pfCurrent = pf.value;
+  pf.innerHTML = '<option value="">Select tenant…</option>' +
+    _tenants.map((t) => `<option value="${t.id}">${esc(t.first_name + ' ' + t.last_name)} — Lot ${esc(t.lot_number)}</option>`).join('');
+  pf.value = pfCurrent;
+}
+
+document.getElementById('new-tenant-btn').addEventListener('click', () => openTenantModal(null));
+
+function openTenantModal(id) {
+  const backdrop = document.getElementById('tenant-modal-backdrop');
+  document.getElementById('tenant-form').reset();
+  document.getElementById('tenant-id').value = '';
+
+  if (id) {
+    const t = _tenants.find((x) => x.id === id);
+    if (!t) return;
+    document.getElementById('tenant-modal-title').textContent = 'Edit Tenant';
+    document.getElementById('tenant-id').value   = t.id;
+    document.getElementById('tf-first').value    = t.first_name;
+    document.getElementById('tf-last').value     = t.last_name;
+    document.getElementById('tf-phone').value    = t.phone_number;
+    document.getElementById('tf-email').value    = t.email || '';
+    document.getElementById('tf-lot').value      = t.lot_number;
+    document.getElementById('tf-rent').value     = t.lot_rent_amount;
+    document.getElementById('tf-movein').value   = t.move_in_date;
+    document.getElementById('tf-balance').value  = t.balance_due;
+  } else {
+    document.getElementById('tenant-modal-title').textContent = 'Add Tenant';
+  }
+  backdrop.hidden = false;
+}
+
+function closeTenantModal() {
+  document.getElementById('tenant-modal-backdrop').hidden = true;
+}
+
+document.getElementById('tenant-modal-close').addEventListener('click', closeTenantModal);
+document.getElementById('tenant-modal-cancel').addEventListener('click', closeTenantModal);
+document.getElementById('tenant-modal-backdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeTenantModal();
+});
+
+document.getElementById('tenant-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('tenant-id').value;
+  const payload = {
+    first_name:       document.getElementById('tf-first').value.trim(),
+    last_name:        document.getElementById('tf-last').value.trim(),
+    phone_number:     document.getElementById('tf-phone').value.trim(),
+    email:            document.getElementById('tf-email').value.trim() || null,
+    lot_number:       document.getElementById('tf-lot').value.trim(),
+    lot_rent_amount:  parseFloat(document.getElementById('tf-rent').value),
+    move_in_date:     document.getElementById('tf-movein').value,
+    balance_due:      parseFloat(document.getElementById('tf-balance').value) || 0,
+  };
+
+  try {
+    if (id) {
+      await apiFetch(`/api/tenants/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    } else {
+      await apiFetch('/api/tenants', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    closeTenantModal();
+    loadTenants();
+  } catch (err) {
+    alert(`Save failed: ${err.message}`);
+  }
+});
+
+async function deleteTenant(id, name) {
+  if (!confirm(`Delete tenant "${name}"? Their payment history will also be deleted.`)) return;
+  try {
+    await apiFetch(`/api/tenants/${id}`, { method: 'DELETE', raw: true });
+    loadTenants();
+  } catch (err) {
+    alert(`Delete failed: ${err.message}`);
+  }
+}
+
+// ── Payments ──────────────────────────────────────────────────────────────────
+
+async function loadPayments() {
+  const el = document.getElementById('payments-list');
+  el.innerHTML = '<p class="loading">Loading…</p>';
+  const tenantId = document.getElementById('payments-filter-tenant').value;
+  const qs = tenantId ? `?tenant_id=${tenantId}` : '';
+  try {
+    const payments = await apiFetch(`/api/payments${qs}`);
+    if (!payments.length) {
+      el.innerHTML = '<p class="empty">No payments recorded yet.</p>';
+      return;
+    }
+    const statusBadge = { paid: 'badge-green', partial: 'badge-yellow', waived: 'badge-gray' };
+    const rows = payments.map((p) => `
+      <tr>
+        <td>${esc(p.first_name)} ${esc(p.last_name)}</td>
+        <td>${esc(p.lot_number)}</td>
+        <td>${esc(p.month_year)}</td>
+        <td>$${Number(p.amount).toFixed(2)}</td>
+        <td><span class="badge ${statusBadge[p.status] || 'badge-gray'}">${esc(p.status)}</span></td>
+        <td>${fmtDate(p.payment_date)}</td>
+        <td>${esc(p.notes || '—')}</td>
+        <td><button class="btn-danger delete-payment" data-id="${p.id}">Delete</button></td>
+      </tr>`).join('');
+    el.innerHTML = `<table>
+      <thead><tr>
+        <th>Tenant</th><th>Lot</th><th>Month</th><th>Amount</th><th>Status</th><th>Date</th><th>Notes</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+    el.querySelectorAll('.delete-payment').forEach((btn) =>
       btn.addEventListener('click', async () => {
-        if (!confirm(`Delete "${btn.dataset.name}"?`)) return;
+        if (!confirm('Delete this payment record?')) return;
         try {
-          await apiFetch(`/api/documents/${btn.dataset.id}`, { method: 'DELETE', raw: true });
-          setStatus('success', `"${btn.dataset.name}" deleted.`);
-          loadDocs();
-        } catch (err) { setStatus('error', err.message); }
+          await apiFetch(`/api/payments/${btn.dataset.id}`, { method: 'DELETE', raw: true });
+          loadPayments();
+        } catch (err) { alert(err.message); }
       }));
   } catch (err) {
     el.innerHTML = `<p class="empty">Error: ${esc(err.message)}</p>`;
   }
 }
 
-document.getElementById('docs-refresh').addEventListener('click', loadDocs);
+document.getElementById('payments-refresh').addEventListener('click', loadPayments);
+document.getElementById('payments-filter-tenant').addEventListener('change', loadPayments);
 
-function setStatus(type, msg) {
-  statusEl.textContent = msg;
-  statusEl.className = `status-msg ${type}`;
-  statusEl.hidden = false;
-  if (type === 'success') setTimeout(() => { statusEl.hidden = true; }, 5000);
+document.getElementById('new-payment-btn').addEventListener('click', () => {
+  document.getElementById('payment-form').reset();
+  // Default to today's date
+  document.getElementById('pf-date').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('payment-modal-backdrop').hidden = false;
+});
+
+function closePaymentModal() {
+  document.getElementById('payment-modal-backdrop').hidden = true;
 }
+
+document.getElementById('payment-modal-close').addEventListener('click', closePaymentModal);
+document.getElementById('payment-modal-cancel').addEventListener('click', closePaymentModal);
+document.getElementById('payment-modal-backdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closePaymentModal();
+});
+
+document.getElementById('payment-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const monthRaw = document.getElementById('pf-month').value; // "YYYY-MM"
+  const payload = {
+    tenant_id:    document.getElementById('pf-tenant').value,
+    amount:       parseFloat(document.getElementById('pf-amount').value),
+    payment_date: document.getElementById('pf-date').value,
+    month_year:   monthRaw,
+    status:       document.getElementById('pf-status').value,
+    notes:        document.getElementById('pf-notes').value.trim() || null,
+  };
+
+  if (!payload.tenant_id) { alert('Please select a tenant.'); return; }
+
+  try {
+    await apiFetch('/api/payments', { method: 'POST', body: JSON.stringify(payload) });
+    closePaymentModal();
+    loadPayments();
+  } catch (err) {
+    alert(`Save failed: ${err.message}`);
+  }
+});
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
@@ -468,6 +593,12 @@ apiFetch('/api/agent-configs').then((data) => {
   _agentConfigs = data || [];
   populateConfigFilter('calls-filter-config');
   populateConfigFilter('leads-filter-config');
+}).catch(() => {});
+
+// Load tenants early so the payment filter and modal dropdown are populated
+apiFetch('/api/tenants').then((data) => {
+  _tenants = data || [];
+  populateTenantFilter();
 }).catch(() => {});
 
 showTab('dashboard');

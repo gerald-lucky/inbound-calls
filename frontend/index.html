@@ -17,7 +17,8 @@
       <li><a href="#" data-tab="routing">Routing</a></li>
       <li><a href="#" data-tab="calls">Calls</a></li>
       <li><a href="#" data-tab="leads">Leads</a></li>
-      <li><a href="#" data-tab="knowledge">Knowledge Base</a></li>
+      <li><a href="#" data-tab="tenants">Tenants</a></li>
+      <li><a href="#" data-tab="payments">Payments</a></li>
     </ul>
   </nav>
 
@@ -165,31 +166,130 @@
       </div>
     </section>
 
-    <!-- ── Knowledge Base ─────────────────────────────────────── -->
-    <section id="tab-knowledge" class="tab">
-      <h1>Knowledge Base</h1>
+    <!-- ── Tenants ───────────────────────────────────────────── -->
+    <section id="tab-tenants" class="tab">
+      <div class="page-header">
+        <h1>Tenants</h1>
+        <button class="btn-primary" id="new-tenant-btn">+ Add Tenant</button>
+      </div>
       <div class="card">
-        <h2>Upload Document</h2>
-        <p class="hint">Supported: PDF, DOCX, TXT, Markdown (max 10 MB)</p>
-        <form id="upload-form">
-          <div class="file-drop" id="file-drop">
-            <input type="file" id="file-input" accept=".pdf,.docx,.txt,.md" hidden />
-            <label for="file-input" class="drop-label">
-              <span class="drop-icon">📄</span>
-              <span id="file-name">Click to choose or drag &amp; drop</span>
-            </label>
-          </div>
-          <button type="submit" id="upload-btn" disabled>Upload &amp; Process</button>
-        </form>
-        <div id="upload-status" class="status-msg" hidden></div>
+        <div id="tenants-list"><p class="loading">Loading…</p></div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <h2>Documents</h2>
-          <button class="btn-secondary" id="docs-refresh">Refresh</button>
+      <!-- Add / Edit tenant modal -->
+      <div class="modal-backdrop" id="tenant-modal-backdrop" hidden>
+        <div class="modal">
+          <div class="modal-header">
+            <h2 id="tenant-modal-title">Add Tenant</h2>
+            <button class="modal-close" id="tenant-modal-close">✕</button>
+          </div>
+          <form id="tenant-form">
+            <input type="hidden" id="tenant-id" />
+            <div class="form-grid">
+              <div class="field">
+                <label>First Name <span class="req">*</span></label>
+                <input type="text" id="tf-first" required />
+              </div>
+              <div class="field">
+                <label>Last Name <span class="req">*</span></label>
+                <input type="text" id="tf-last" required />
+              </div>
+              <div class="field">
+                <label>Phone Number <span class="req">*</span></label>
+                <input type="text" id="tf-phone" placeholder="+15551234567" required />
+              </div>
+              <div class="field">
+                <label>Email</label>
+                <input type="email" id="tf-email" />
+              </div>
+              <div class="field">
+                <label>Lot Number <span class="req">*</span></label>
+                <input type="text" id="tf-lot" placeholder="42" required />
+              </div>
+              <div class="field">
+                <label>Monthly Rent ($) <span class="req">*</span></label>
+                <input type="number" id="tf-rent" min="0" step="0.01" required />
+              </div>
+              <div class="field">
+                <label>Move-in Date <span class="req">*</span></label>
+                <input type="date" id="tf-movein" required />
+              </div>
+              <div class="field">
+                <label>Balance Due ($)</label>
+                <input type="number" id="tf-balance" min="0" step="0.01" value="0" />
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-secondary" id="tenant-modal-cancel">Cancel</button>
+              <button type="submit" class="btn-primary">Save Tenant</button>
+            </div>
+          </form>
         </div>
-        <div id="docs-list"><p class="loading">Loading…</p></div>
+      </div>
+    </section>
+
+    <!-- ── Payments ──────────────────────────────────────────── -->
+    <section id="tab-payments" class="tab">
+      <div class="page-header">
+        <h1>Payments</h1>
+        <button class="btn-primary" id="new-payment-btn">+ Log Payment</button>
+      </div>
+      <div class="filter-bar">
+        <select id="payments-filter-tenant">
+          <option value="">All tenants</option>
+        </select>
+        <button class="btn-secondary" id="payments-refresh">Refresh</button>
+      </div>
+      <div class="card">
+        <div id="payments-list"><p class="loading">Loading…</p></div>
+      </div>
+
+      <!-- Log payment modal -->
+      <div class="modal-backdrop" id="payment-modal-backdrop" hidden>
+        <div class="modal">
+          <div class="modal-header">
+            <h2>Log Payment</h2>
+            <button class="modal-close" id="payment-modal-close">✕</button>
+          </div>
+          <form id="payment-form">
+            <div class="form-grid">
+              <div class="field full">
+                <label>Tenant <span class="req">*</span></label>
+                <select id="pf-tenant" required>
+                  <option value="">Select tenant…</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Month (YYYY-MM) <span class="req">*</span></label>
+                <input type="month" id="pf-month" required />
+              </div>
+              <div class="field">
+                <label>Amount ($) <span class="req">*</span></label>
+                <input type="number" id="pf-amount" min="0" step="0.01" required />
+              </div>
+              <div class="field">
+                <label>Payment Date <span class="req">*</span></label>
+                <input type="date" id="pf-date" required />
+              </div>
+              <div class="field">
+                <label>Status</label>
+                <select id="pf-status">
+                  <option value="paid">Paid</option>
+                  <option value="partial">Partial</option>
+                  <option value="waived">Waived</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Notes</label>
+                <input type="text" id="pf-notes" placeholder="Optional note" />
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-secondary" id="payment-modal-cancel">Cancel</button>
+              <button type="submit" class="btn-primary">Save Payment</button>
+            </div>
+          </form>
+        </div>
       </div>
     </section>
 

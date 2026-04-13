@@ -10,10 +10,11 @@ const cors = require('cors');
 const path = require('path');
 
 const incomingCallRoute  = require('./routes/incoming-call');
-const documentsRoute     = require('./routes/documents');
 const agentConfigsRoute  = require('./routes/agent-configs');
 const callsRoute         = require('./routes/calls');
 const leadsRoute         = require('./routes/leads');
+const tenantsRoute       = require('./routes/tenants');
+const paymentsRoute      = require('./routes/payments');
 const CallSession        = require('./call-session');
 const agentConfigs       = require('./services/agent-configs');
 
@@ -30,10 +31,11 @@ app.use(express.static(path.join(__dirname, '../../frontend')));
 
 // HTTP API routes
 app.use('/incoming-call',       incomingCallRoute);
-app.use('/api/documents',       documentsRoute);
 app.use('/api/agent-configs',   agentConfigsRoute);
 app.use('/api/calls',           callsRoute);
 app.use('/api/leads',           leadsRoute);
+app.use('/api/tenants',         tenantsRoute);
+app.use('/api/payments',        paymentsRoute);
 
 // Upgrade HTTP → WebSocket only for /media-stream
 server.on('upgrade', async (req, socket, head) => {

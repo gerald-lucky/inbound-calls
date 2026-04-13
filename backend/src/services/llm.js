@@ -2,7 +2,6 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { EventEmitter } = require('events');
-const knowledgeBase = require('./knowledge-base');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
@@ -14,6 +13,7 @@ const SENTENCE_END = /[.!?]\s+|[.!?]$/;
  * LLMService handles a single conversation with Claude Sonnet 4.6.
  *
  * @param {string} systemPrompt - Per-agent system prompt (from agent config or env var).
+ * @param {string} callerContext - Pre-fetched tenant account info injected once at call start.
  *
  * Events emitted:
  *   'sentence'  (text: string)     — complete sentence ready for TTS
@@ -21,16 +21,17 @@ const SENTENCE_END = /[.!?]\s+|[.!?]$/;
  *   'error'     (err: Error)
  */
 class LLMService extends EventEmitter {
-  constructor(systemPrompt) {
+  constructor(systemPrompt, callerContext) {
     super();
     this._systemPrompt = systemPrompt ||
       'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
+    this._callerContext = callerContext || '';
     /** @type {Array<{role: string, content: string}>} */
     this.conversationHistory = [];
   }
 
   /**
-   * Process a caller utterance: retrieve RAG context, stream Claude's response,
+   * Process a caller utterance: inject pre-fetched caller context, stream Claude's response,
    * and emit sentence chunks as they become available.
    *
    * @param {string} utterance
@@ -39,11 +40,9 @@ class LLMService extends EventEmitter {
   async respond(utterance, signal) {
     this.conversationHistory.push({ role: 'user', content: utterance });
 
-    const context = await knowledgeBase.search(utterance);
-
     const systemPrompt = [
       this._systemPrompt,
-      context ? `\n\nRelevant knowledge base information:\n${context}` : '',
+      this._callerContext ? `\n\n${this._callerContext}` : '',
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally.',
     ].join('');
 
