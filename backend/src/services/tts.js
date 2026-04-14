@@ -5,8 +5,7 @@ const { EventEmitter } = require('events');
 
 // ElevenLabs TTS streaming WebSocket — ulaw_8000 output matches Twilio's format
 const TTS_URL = (voiceId) =>
-  `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input` +
-  `?output_format=ulaw_8000&optimize_streaming_latency=4`;
+  `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?output_format=ulaw_8000`;
 
 /**
  * TTSService streams text to ElevenLabs TTS and emits audio chunks in the
@@ -81,14 +80,19 @@ class TTSService extends EventEmitter {
 
       ws.on('message', (data) => {
         if (data instanceof Buffer) {
+          console.log(`[tts] Received binary audio chunk: ${data.length} bytes`);
           this.emit('audio', data.toString('base64'));
         } else {
           let msg;
           try { msg = JSON.parse(data.toString()); } catch { return; }
 
-          if (msg.audio) this.emit('audio', msg.audio);
+          if (msg.audio) {
+            console.log(`[tts] Received JSON audio chunk: ${msg.audio.length} base64 chars`);
+            this.emit('audio', msg.audio);
+          }
 
           if (msg.isFinal) {
+            console.log('[tts] Received isFinal — closing turn');
             this._speaking = false;
             this._ws       = null;
             this.emit('done');
@@ -97,6 +101,11 @@ class TTSService extends EventEmitter {
           if (msg.error) {
             console.error('[tts] ElevenLabs error:', msg.message || msg.error);
             this.emit('error', new Error(msg.message || msg.error));
+          }
+
+          // Log any unrecognized messages for debugging
+          if (!msg.audio && !msg.isFinal && !msg.error) {
+            console.log('[tts] ElevenLabs message:', JSON.stringify(msg));
           }
         }
       });
@@ -129,6 +138,7 @@ class TTSService extends EventEmitter {
       console.warn('[tts] sendText called but WebSocket is not open');
       return;
     }
+    console.log(`[tts] sendText: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}"`);
     this._ws.send(JSON.stringify({ text: text + ' ', flush: false }));
   }
 
@@ -136,7 +146,11 @@ class TTSService extends EventEmitter {
    * Signal end-of-input to ElevenLabs — triggers final audio flush.
    */
   flush() {
-    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
+      console.warn('[tts] flush called but WebSocket is not open');
+      return;
+    }
+    console.log('[tts] flush — sending end-of-input signal');
     this._ws.send(JSON.stringify({ text: '', flush: true }));
   }
 

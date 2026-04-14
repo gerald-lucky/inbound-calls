@@ -142,6 +142,7 @@ class CallSession {
 
   _wiredTTS() {
     this._tts.on('audio', (base64Payload) => {
+      console.log(`[call-session] Forwarding audio to Twilio — streamSid: ${this._streamSid}, wsState: ${this._twilioWs.readyState}, bytes: ${Math.round(base64Payload.length * 0.75)}`);
       this._sendAudioToTwilio(base64Payload);
     });
 
