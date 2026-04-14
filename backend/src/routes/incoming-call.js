@@ -28,7 +28,8 @@ router.post('/', async (req, res) => {
   }
 
   const base  = serverUrl.replace(/\/$/, '');
-  const wsUrl = base.replace(/^http/, 'wss') + '/media-stream';
+  const wsUrl = base.replace(/^https?/, 'wss') + '/media-stream';
+  console.log(`[incoming-call] WS stream URL: ${wsUrl}`);
 
   // Pass metadata via <Parameter> — avoids query-string / XML-escaping issues
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
