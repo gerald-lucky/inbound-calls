@@ -39,6 +39,8 @@ app.use('/api/payments',        paymentsRoute);
 
 // Upgrade HTTP → WebSocket only for /media-stream
 server.on('upgrade', async (req, socket, head) => {
+  console.log(`[server] Upgrade request: ${req.url}`);
+
   const parsed = url.parse(req.url, true);
 
   if (!parsed.pathname.startsWith('/media-stream')) {
@@ -48,20 +50,26 @@ server.on('upgrade', async (req, socket, head) => {
 
   // Extract call metadata embedded by incoming-call.js
   const { callSid, callerNumber, twilioNumber, configId } = parsed.query;
+  console.log(`[server] WS upgrade — caller: ${callerNumber}, configId: ${configId}`);
 
-  // Resolve the agent config (may already be known via configId, fetch full object)
+  // Resolve the agent config
   let agentConfig = null;
   if (configId) {
     try {
       agentConfig = await agentConfigs.getById(configId);
-    } catch {
-      // config might have been deleted between webhook and WS connect; fall back
+    } catch (err) {
+      console.error('[server] Failed to fetch agent config:', err.message);
     }
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req, { callSid, callerNumber, twilioNumber, agentConfig });
-  });
+  try {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req, { callSid, callerNumber, twilioNumber, agentConfig });
+    });
+  } catch (err) {
+    console.error('[server] WebSocket upgrade error:', err.message);
+    socket.destroy();
+  }
 });
 
 wss.on('connection', (ws, _req, meta = {}) => {
