@@ -42,11 +42,13 @@ router.post('/', async (req, res) => {
   });
 
   const wsUrl = `${wsBase}/media-stream?${params.toString()}`;
+  // & must be escaped as &amp; inside XML attribute values
+  const xmlSafeWsUrl = wsUrl.replace(/&/g, '&amp;');
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${wsUrl}" />
+    <Stream url="${xmlSafeWsUrl}" />
   </Connect>
 </Response>`;
 
