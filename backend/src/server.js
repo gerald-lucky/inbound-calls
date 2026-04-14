@@ -37,6 +37,21 @@ app.use('/api/leads',           leadsRoute);
 app.use('/api/tenants',         tenantsRoute);
 app.use('/api/payments',        paymentsRoute);
 
+// Diagnostic: if Railway forwards the upgrade as a plain GET, log it
+app.get('/media-stream', (req, res) => {
+  console.log('[server] /media-stream hit as plain HTTP GET — WebSocket upgrade not forwarded by proxy');
+  res.status(426).send('Upgrade Required');
+});
+
+// Also log any upgrade events Node.js receives
+server.on('upgrade', (req) => {
+  console.log(`[server] HTTP upgrade event received: ${req.url} — headers: ${JSON.stringify(req.headers['upgrade'])}`);
+});
+
+wss.on('error', (err) => {
+  console.error('[server] WebSocket server error:', err.message);
+});
+
 wss.on('connection', async (ws, req) => {
   const parsed = url.parse(req.url, true);
   const { callSid, callerNumber, twilioNumber, configId } = parsed.query;
