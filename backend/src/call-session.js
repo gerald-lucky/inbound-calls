@@ -49,6 +49,7 @@ class CallSession {
 
   start() {
     this._wiredTwilio();
+    this._wiredTranscription(); // register error handler before connect() to avoid crash
 
     // Open Scribe connection eagerly so it's ready when audio arrives
     this._transcription.connect().catch((err) => {
@@ -80,7 +81,6 @@ class CallSession {
           const configId     = cp.configId     || null;
 
           this._initCall(configId).then(() => {
-            this._wiredTranscription();
             this._wiredTTS();
             setTimeout(() => this._speak(this._greeting), 500);
           }).catch((err) => {
