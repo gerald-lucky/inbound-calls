@@ -20,7 +20,7 @@ const agentConfigs       = require('./services/agent-configs');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ server, path: '/media-stream' });
 
 app.use(cors());
 app.use(express.json());
@@ -37,22 +37,12 @@ app.use('/api/leads',           leadsRoute);
 app.use('/api/tenants',         tenantsRoute);
 app.use('/api/payments',        paymentsRoute);
 
-// Upgrade HTTP → WebSocket only for /media-stream
-server.on('upgrade', async (req, socket, head) => {
-  console.log(`[server] Upgrade request: ${req.url}`);
-
+wss.on('connection', async (ws, req) => {
   const parsed = url.parse(req.url, true);
-
-  if (!parsed.pathname.startsWith('/media-stream')) {
-    socket.destroy();
-    return;
-  }
-
-  // Extract call metadata embedded by incoming-call.js
   const { callSid, callerNumber, twilioNumber, configId } = parsed.query;
-  console.log(`[server] WS upgrade — caller: ${callerNumber}, configId: ${configId}`);
 
-  // Resolve the agent config
+  console.log(`[server] New call — ${callerNumber || '?'} → ${twilioNumber || '?'}`);
+
   let agentConfig = null;
   if (configId) {
     try {
@@ -62,19 +52,7 @@ server.on('upgrade', async (req, socket, head) => {
     }
   }
 
-  try {
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, req, { callSid, callerNumber, twilioNumber, agentConfig });
-    });
-  } catch (err) {
-    console.error('[server] WebSocket upgrade error:', err.message);
-    socket.destroy();
-  }
-});
-
-wss.on('connection', (ws, _req, meta = {}) => {
-  console.log(`[server] New call — ${meta.callerNumber || '?'} → ${meta.twilioNumber || '?'}`);
-  const session = new CallSession(ws, meta);
+  const session = new CallSession(ws, { callSid, callerNumber, twilioNumber, agentConfig });
   session.start();
 });
 
