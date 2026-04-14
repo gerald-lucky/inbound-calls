@@ -1,134 +1,161 @@
 'use strict';
 
-const WebSocket = require('ws');
 const { EventEmitter } = require('events');
 
-// ElevenLabs Scribe v2 Realtime STT WebSocket endpoint
-const SCRIBE_URL = 'wss://api.elevenlabs.io/v1/speech-to-text/stream';
+const SCRIBE_URL        = 'https://api.elevenlabs.io/v1/speech-to-text';
+const SAMPLE_RATE       = 8000;
+const SILENCE_MS        = 1000;                  // flush after 1 s of silence
+const MIN_SPEECH_BYTES  = SAMPLE_RATE * 0.3;    // ignore clips shorter than 300 ms
+const SILENCE_RMS_THRESHOLD = 500;              // out of ~32 k max
+
+// ─── µ-law helpers ────────────────────────────────────────────────────────────
+
+function mulawToLinear(byte) {
+  const u = (~byte) & 0xFF;
+  const t = (((u & 0x0F) << 3) + 0x84) << ((u & 0x70) >> 4);
+  return (u & 0x80) ? (0x84 - t) : (t - 0x84);
+}
+
+function rms(buffer) {
+  let sum = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    const s = mulawToLinear(buffer[i]);
+    sum += s * s;
+  }
+  return Math.sqrt(sum / buffer.length);
+}
+
+function mulawToWav(mulawBuf) {
+  // Decode µ-law → 16-bit signed PCM
+  const pcm = Buffer.alloc(mulawBuf.length * 2);
+  for (let i = 0; i < mulawBuf.length; i++) {
+    pcm.writeInt16LE(mulawToLinear(mulawBuf[i]), i * 2);
+  }
+  // Standard 44-byte WAV header for 8 kHz 16-bit mono PCM
+  const hdr = Buffer.alloc(44);
+  hdr.write('RIFF', 0);
+  hdr.writeUInt32LE(36 + pcm.length, 4);
+  hdr.write('WAVE', 8);
+  hdr.write('fmt ', 12);
+  hdr.writeUInt32LE(16, 16);          // fmt chunk size
+  hdr.writeUInt16LE(1, 20);           // PCM = 1
+  hdr.writeUInt16LE(1, 22);           // mono
+  hdr.writeUInt32LE(8000, 24);        // sample rate
+  hdr.writeUInt32LE(16000, 28);       // byte rate (8000 × 2)
+  hdr.writeUInt16LE(2, 32);           // block align
+  hdr.writeUInt16LE(16, 34);          // bits/sample
+  hdr.write('data', 36);
+  hdr.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([hdr, pcm]);
+}
+
+// ─── TranscriptionService ─────────────────────────────────────────────────────
 
 /**
- * TranscriptionService wraps an ElevenLabs Scribe v2 Realtime WebSocket.
+ * Batch-mode STT using ElevenLabs Scribe v2.
  *
- * Events emitted:
- *   'utterance'      (text: string)  — final, stable transcript for a turn
- *   'speech_started' ()              — caller started speaking (for barge-in)
+ * Instead of a persistent WebSocket, this buffers incoming µ-law audio,
+ * detects utterance boundaries via a 1-second silence timeout, converts the
+ * buffer to a 16-bit PCM WAV, and POSTs it to the ElevenLabs batch API.
+ *
+ * Events emitted (same interface as the old real-time version):
+ *   'utterance'      (text: string)
+ *   'speech_started' ()
  *   'error'          (err: Error)
- *   'close'          ()
  */
 class TranscriptionService extends EventEmitter {
   constructor() {
     super();
-    this._ws = null;
-    this._connected = false;
-    this._pendingAudio = []; // Buffer audio received before WS opens
+    this._chunks       = [];
+    this._silenceTimer = null;
+    this._speaking     = false;
+    this._connected    = false;
   }
 
   /**
-   * Open the Scribe WebSocket.
-   * @returns {Promise<void>} Resolves when the connection is open.
+   * Batch mode requires no persistent connection — resolves immediately.
    */
   connect() {
-    return new Promise((resolve, reject) => {
-      const apiKey = (process.env.ELEVENLABS_API_KEY || '').trim();
-      const url = `${SCRIBE_URL}?xi-api-key=${apiKey}`;
-      const ws = new WebSocket(url, {
+    this._connected = true;
+    console.log('[transcription] Batch STT ready (ElevenLabs Scribe v2)');
+    return Promise.resolve();
+  }
+
+  /**
+   * Receive a raw µ-law audio chunk from Twilio.
+   * @param {Buffer} buffer
+   */
+  sendAudio(buffer) {
+    if (!this._connected) return;
+
+    const silent = rms(buffer) < SILENCE_RMS_THRESHOLD;
+
+    if (!silent) {
+      if (!this._speaking) {
+        this._speaking = true;
+        this.emit('speech_started');
+      }
+      this._chunks.push(buffer);
+      this._resetSilenceTimer();
+    } else if (this._speaking) {
+      // Keep accumulating during brief pauses so we don't clip word endings
+      this._chunks.push(buffer);
+    }
+  }
+
+  _resetSilenceTimer() {
+    clearTimeout(this._silenceTimer);
+    this._silenceTimer = setTimeout(() => this._flush(), SILENCE_MS);
+  }
+
+  async _flush() {
+    if (!this._speaking || this._chunks.length === 0) return;
+
+    const raw = Buffer.concat(this._chunks);
+    this._chunks  = [];
+    this._speaking = false;
+
+    if (raw.length < MIN_SPEECH_BYTES) return; // too short — likely noise
+
+    const apiKey = (process.env.ELEVENLABS_API_KEY || '').trim();
+
+    try {
+      const wav  = mulawToWav(raw);
+      const form = new FormData();
+      form.append('audio', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
+      form.append('model_id', 'scribe_v2');
+      form.append('language_code', 'en');
+
+      const res = await fetch(SCRIBE_URL, {
+        method:  'POST',
         headers: { 'xi-api-key': apiKey },
+        body:    form,
       });
 
-      ws.on('open', () => {
-        console.log('[transcription] Scribe WebSocket open');
-        this._connected = true;
+      if (!res.ok) {
+        const body = await res.text();
+        console.error(`[transcription] Scribe batch error ${res.status}: ${body}`);
+        this.emit('error', new Error(`Scribe ${res.status}`));
+        return;
+      }
 
-        // Send a configuration message to set audio format
-        const config = {
-          type: 'config',
-          config: {
-            encoding: 'ulaw',
-            sample_rate: 8000,
-            language_code: 'en',
-          },
-        };
-        ws.send(JSON.stringify(config));
-
-        // Flush any audio that arrived before the connection opened
-        for (const chunk of this._pendingAudio) {
-          ws.send(chunk);
-        }
-        this._pendingAudio = [];
-        resolve();
-      });
-
-      ws.on('message', (data) => {
-        let msg;
-        try {
-          msg = JSON.parse(data.toString());
-        } catch {
-          return;
-        }
-
-        switch (msg.type) {
-          case 'speech_started':
-            this.emit('speech_started');
-            break;
-
-          case 'transcript':
-            if (msg.is_final && msg.text && msg.text.trim()) {
-              console.log(`[transcription] Final transcript: "${msg.text.trim()}"`);
-              this.emit('utterance', msg.text.trim());
-            }
-            break;
-
-          case 'error':
-            console.error('[transcription] Scribe error:', msg.message);
-            this.emit('error', new Error(msg.message));
-            break;
-
-          default:
-            break;
-        }
-      });
-
-      ws.on('error', (err) => {
-        console.error('[transcription] WebSocket error:', err.message);
-        this.emit('error', err);
-        reject(err);
-      });
-
-      ws.on('close', () => {
-        console.log('[transcription] Scribe WebSocket closed');
-        this._connected = false;
-        this.emit('close');
-      });
-
-      this._ws = ws;
-    });
-  }
-
-  /**
-   * Send a raw audio chunk (Buffer of μ-law 8kHz bytes) to Scribe.
-   * @param {Buffer} audioBuffer
-   */
-  sendAudio(audioBuffer) {
-    if (!this._ws) return;
-    if (!this._connected) {
-      this._pendingAudio.push(audioBuffer);
-      return;
-    }
-    if (this._ws.readyState === WebSocket.OPEN) {
-      this._ws.send(audioBuffer);
+      const json = await res.json();
+      const text = (json.text || '').trim();
+      if (text) {
+        console.log(`[transcription] Final transcript: "${text}"`);
+        this.emit('utterance', text);
+      }
+    } catch (err) {
+      console.error('[transcription] Batch transcription failed:', err.message);
+      this.emit('error', err);
     }
   }
 
-  /**
-   * Gracefully close the Scribe connection.
-   */
   close() {
-    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
-      this._ws.close();
-    }
-    this._ws = null;
+    clearTimeout(this._silenceTimer);
+    this._chunks   = [];
+    this._speaking = false;
     this._connected = false;
-    this._pendingAudio = [];
   }
 }
 
