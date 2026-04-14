@@ -29,9 +29,10 @@ class TranscriptionService extends EventEmitter {
    */
   connect() {
     return new Promise((resolve, reject) => {
-      const url = `${SCRIBE_URL}?xi-api-key=${process.env.ELEVENLABS_API_KEY}`;
+      const apiKey = (process.env.ELEVENLABS_API_KEY || '').trim();
+      const url = `${SCRIBE_URL}?xi-api-key=${apiKey}`;
       const ws = new WebSocket(url, {
-        headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY },
+        headers: { 'xi-api-key': apiKey },
       });
 
       ws.on('open', () => {

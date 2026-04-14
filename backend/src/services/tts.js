@@ -38,8 +38,9 @@ class TTSService extends EventEmitter {
    */
   connect() {
     return new Promise((resolve, reject) => {
+      const apiKey = (process.env.ELEVENLABS_API_KEY || '').trim();
       const ws = new WebSocket(TTS_URL(this._voiceId), {
-        headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY },
+        headers: { 'xi-api-key': apiKey },
       });
 
       ws.on('open', () => {
@@ -54,7 +55,7 @@ class TTSService extends EventEmitter {
           generation_config: {
             chunk_length_schedule: [50, 90, 120, 150],
           },
-          xi_api_key: process.env.ELEVENLABS_API_KEY,
+          xi_api_key: apiKey,
         };
         ws.send(JSON.stringify(initMsg));
         this._speaking = true;
