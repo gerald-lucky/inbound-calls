@@ -8,7 +8,7 @@ const agentConfigs = require('../services/agent-configs');
 // Returns TwiML that opens a Media Stream WebSocket, passing call
 // metadata as <Parameter> elements (no query string needed).
 router.post('/', async (req, res) => {
-  const serverUrl = process.env.SERVER_URL;
+  const serverUrl = (process.env.SERVER_URL || '').trim();
   if (!serverUrl) {
     console.error('[incoming-call] SERVER_URL is not set');
     return res.status(500).send('Server misconfigured');
