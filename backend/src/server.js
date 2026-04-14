@@ -46,7 +46,7 @@ wss.on('error', (err) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`[server] Listening on port ${PORT}`);
+  console.log(`[server] v2 — Listening on port ${PORT}`);
   console.log(`[server] Webhook: POST ${process.env.SERVER_URL || `http://localhost:${PORT}`}/incoming-call`);
   console.log(`[server] Admin UI: ${process.env.SERVER_URL || `http://localhost:${PORT}`}/`);
 });
