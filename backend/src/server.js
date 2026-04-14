@@ -3,72 +3,45 @@
 require('dotenv').config();
 
 const http = require('http');
-const url = require('url');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const cors = require('cors');
 const path = require('path');
 
-const incomingCallRoute  = require('./routes/incoming-call');
-const agentConfigsRoute  = require('./routes/agent-configs');
-const callsRoute         = require('./routes/calls');
-const leadsRoute         = require('./routes/leads');
-const tenantsRoute       = require('./routes/tenants');
-const paymentsRoute      = require('./routes/payments');
-const CallSession        = require('./call-session');
-const agentConfigs       = require('./services/agent-configs');
+const incomingCallRoute = require('./routes/incoming-call');
+const agentConfigsRoute = require('./routes/agent-configs');
+const callsRoute        = require('./routes/calls');
+const leadsRoute        = require('./routes/leads');
+const tenantsRoute      = require('./routes/tenants');
+const paymentsRoute     = require('./routes/payments');
+const CallSession       = require('./call-session');
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/media-stream' });
+// No path filter — accept all WebSocket upgrades (only /media-stream is used)
+const wss    = new WebSocketServer({ server });
 
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Serve the frontend admin UI as static files
 app.use(express.static(path.join(__dirname, '../../frontend')));
 
-// HTTP API routes
-app.use('/incoming-call',       incomingCallRoute);
-app.use('/api/agent-configs',   agentConfigsRoute);
-app.use('/api/calls',           callsRoute);
-app.use('/api/leads',           leadsRoute);
-app.use('/api/tenants',         tenantsRoute);
-app.use('/api/payments',        paymentsRoute);
+app.use('/incoming-call',     incomingCallRoute);
+app.use('/api/agent-configs', agentConfigsRoute);
+app.use('/api/calls',         callsRoute);
+app.use('/api/leads',         leadsRoute);
+app.use('/api/tenants',       tenantsRoute);
+app.use('/api/payments',      paymentsRoute);
 
-// Diagnostic: if Railway forwards the upgrade as a plain GET, log it
-app.get('/media-stream', (req, res) => {
-  console.log('[server] /media-stream hit as plain HTTP GET — WebSocket upgrade not forwarded by proxy');
-  res.status(426).send('Upgrade Required');
-});
-
-// Also log any upgrade events Node.js receives
-server.on('upgrade', (req) => {
-  console.log(`[server] HTTP upgrade event received: ${req.url} — headers: ${JSON.stringify(req.headers['upgrade'])}`);
+wss.on('connection', (ws, req) => {
+  console.log(`[server] WebSocket connected — ${req.url}`);
+  const session = new CallSession(ws);
+  session.start();
 });
 
 wss.on('error', (err) => {
   console.error('[server] WebSocket server error:', err.message);
-});
-
-wss.on('connection', async (ws, req) => {
-  const parsed = url.parse(req.url, true);
-  const { callSid, callerNumber, twilioNumber, configId } = parsed.query;
-
-  console.log(`[server] New call — ${callerNumber || '?'} → ${twilioNumber || '?'}`);
-
-  let agentConfig = null;
-  if (configId) {
-    try {
-      agentConfig = await agentConfigs.getById(configId);
-    } catch (err) {
-      console.error('[server] Failed to fetch agent config:', err.message);
-    }
-  }
-
-  const session = new CallSession(ws, { callSid, callerNumber, twilioNumber, agentConfig });
-  session.start();
 });
 
 const PORT = process.env.PORT || 3000;

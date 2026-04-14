@@ -1,62 +1,54 @@
 'use strict';
 
 const TranscriptionService = require('./services/transcription');
-const LLMService = require('./services/llm');
-const TTSService = require('./services/tts');
-const callLogger = require('./services/call-logger');
-const parkData = require('./services/park-data');
+const LLMService           = require('./services/llm');
+const TTSService           = require('./services/tts');
+const callLogger           = require('./services/call-logger');
+const parkData             = require('./services/park-data');
+const agentConfigs         = require('./services/agent-configs');
 
 /**
  * CallSession manages the complete lifecycle of one inbound phone call.
  *
- * Constructor accepts a `meta` object with:
- *   callSid, callerNumber, twilioNumber, agentConfig (or null for env defaults)
+ * Metadata (caller number, agent config, etc.) is read from Twilio's
+ * `start` event customParameters — no query string needed on the WS URL.
  *
  * Data flow:
  *   Twilio WS → TranscriptionService (Scribe STT)
  *   TranscriptionService 'utterance' → LLMService (Claude)
  *   LLMService 'sentence' → TTSService (ElevenLabs TTS)
  *   TTSService 'audio' → Twilio WS
- *
- * After each LLM turn completes, a background lead extraction runs non-blocking.
  */
 class CallSession {
-  constructor(twilioWs, meta = {}) {
-    this._twilioWs    = twilioWs;
-    this._streamSid   = null;
-    this._startedAt   = new Date();
+  constructor(twilioWs) {
+    this._twilioWs   = twilioWs;
+    this._streamSid  = null;
+    this._startedAt  = new Date();
 
-    // Call metadata (from Twilio webhook, relayed via WS query params)
-    this._callSid       = meta.callSid       || null;
-    this._callerNumber  = meta.callerNumber  || 'unknown';
-    this._twilioNumber  = meta.twilioNumber  || null;
-    this._agentConfig   = meta.agentConfig   || null;
-    this._callDbId      = null;  // set after DB insert
+    // Populated from Twilio's `start` event customParameters
+    this._callSid      = null;
+    this._callerNumber = 'unknown';
+    this._twilioNumber = null;
+    this._agentConfig  = null;
+    this._callDbId     = null;
 
-    // Resolve per-call config values (fall back to env vars)
-    const cfg = this._agentConfig;
-    this._systemPrompt = cfg?.system_prompt || process.env.AGENT_SYSTEM_PROMPT ||
-      'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
-    this._greeting     = cfg?.greeting      || process.env.AGENT_GREETING ||
-      "Hello! Thanks for calling. How can I help you today?";
-    this._voiceId      = cfg?.voice_id      || process.env.ELEVENLABS_VOICE_ID;
+    // Resolved in _initCall once we have the agentConfig
+    this._systemPrompt = null;
+    this._greeting     = null;
+    this._voiceId      = null;
 
-    // Services (fully initialized once caller context is fetched in _logCallStart)
-    this._transcription = new TranscriptionService();
-    this._llm           = null;  // created after caller context fetch
-    this._tts           = new TTSService(this._voiceId);
-
-    this._isSpeaking          = false;
-    this._abortController     = null;
-    this._processingUtterance = false;
+    this._transcription        = new TranscriptionService();
+    this._llm                  = null;
+    this._tts                  = null;
+    this._isSpeaking           = false;
+    this._abortController      = null;
+    this._processingUtterance  = false;
   }
 
   // ─── Startup ──────────────────────────────────────────────────────────────
 
   start() {
     this._wiredTwilio();
-    this._wiredTranscription();
-    this._wiredTTS();
 
     // Open Scribe connection eagerly so it's ready when audio arrives
     this._transcription.connect().catch((err) => {
@@ -76,14 +68,26 @@ class CallSession {
           console.log('[call-session] Twilio connected');
           break;
 
-        case 'start':
+        case 'start': {
           this._streamSid = msg.start.streamSid;
           console.log(`[call-session] Stream started: ${this._streamSid}`);
-          // Log call start and fetch caller context, then play greeting
-          this._initCall().then(() => {
+
+          // Read metadata from Twilio custom parameters
+          const cp = msg.start.customParameters || {};
+          this._callSid      = cp.callSid      || msg.start.callSid || null;
+          this._callerNumber = cp.callerNumber || 'unknown';
+          this._twilioNumber = cp.twilioNumber || null;
+          const configId     = cp.configId     || null;
+
+          this._initCall(configId).then(() => {
+            this._wiredTranscription();
+            this._wiredTTS();
             setTimeout(() => this._speak(this._greeting), 500);
+          }).catch((err) => {
+            console.error('[call-session] _initCall failed:', err.message);
           });
           break;
+        }
 
         case 'media':
           if (msg.media?.payload) {
@@ -125,7 +129,6 @@ class CallSession {
 
     this._transcription.on('utterance', async (text) => {
       if (this._processingUtterance) return;
-      // Log caller's turn
       callLogger.appendTranscript(this._callDbId, { role: 'caller', text });
       await this._handleUtterance(text);
     });
@@ -156,7 +159,7 @@ class CallSession {
   // ─── Core pipeline ────────────────────────────────────────────────────────
 
   async _handleUtterance(text) {
-    if (!this._llm) return;  // still initializing (caller context fetch in progress)
+    if (!this._llm) return;
     console.log(`[call-session] Caller said: "${text}"`);
     this._processingUtterance = true;
 
@@ -174,8 +177,6 @@ class CallSession {
       this._llm.removeListener('error', onError);
       this._processingUtterance = false;
       this._tts.flush();
-
-      // Log agent's response and run background lead extraction
       callLogger.appendTranscript(this._callDbId, { role: 'agent', text: fullResponse });
       this._extractLeadInBackground();
     };
@@ -234,10 +235,32 @@ class CallSession {
     this._processingUtterance = false;
   }
 
-  // ─── DB helpers ───────────────────────────────────────────────────────────
+  // ─── Initialisation (runs after start event) ───────────────────────────────
 
-  async _initCall() {
-    // Log the call to the DB and fetch caller context in parallel
+  async _initCall(configId) {
+    // Look up agent config
+    if (configId) {
+      try {
+        this._agentConfig = await agentConfigs.getById(configId);
+      } catch (err) {
+        console.error('[call-session] Agent config lookup failed:', err.message);
+      }
+    }
+
+    // Resolve per-call values (fall back to env vars)
+    const cfg = this._agentConfig;
+    this._systemPrompt = cfg?.system_prompt || process.env.AGENT_SYSTEM_PROMPT ||
+      'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
+    this._greeting = cfg?.greeting || process.env.AGENT_GREETING ||
+      'Hello! Thanks for calling. How can I help you today?';
+    this._voiceId = cfg?.voice_id || process.env.ELEVENLABS_VOICE_ID;
+
+    // Create TTS now that we have the voice ID
+    this._tts = new TTSService(this._voiceId);
+
+    console.log(`[call-session] Init — caller: ${this._callerNumber}, agent: ${cfg?.name || 'default'}`);
+
+    // Log call start + fetch caller context in parallel
     const [, callerContext] = await Promise.all([
       callLogger.startCall({
         callSid:       this._callSid,
@@ -248,14 +271,9 @@ class CallSession {
       parkData.buildCallerContext(this._callerNumber),
     ]);
 
-    // Create the LLM with the pre-fetched caller context
     this._llm = new LLMService(this._systemPrompt, callerContext);
   }
 
-  /**
-   * After each LLM turn, check non-blocking whether a lead should be captured.
-   * Runs entirely in the background — does not affect call latency.
-   */
   _extractLeadInBackground() {
     if (!this._callDbId) return;
     this._llm.tryExtractLead(this._callerNumber).then((lead) => {
@@ -306,12 +324,10 @@ class CallSession {
       this._abortController = null;
     }
     this._transcription.close();
-    this._tts.abort();
+    if (this._tts) this._tts.abort();
     if (this._llm) this._llm.reset();
     this._isSpeaking = false;
     this._processingUtterance = false;
-
-    // Persist call end time
     callLogger.endCall(this._callDbId, this._startedAt);
     console.log('[call-session] Torn down');
   }
