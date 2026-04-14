@@ -80,8 +80,29 @@ class TTSService extends EventEmitter {
 
       ws.on('message', (data) => {
         if (data instanceof Buffer) {
-          console.log(`[tts] Received binary audio chunk: ${data.length} bytes`);
-          this.emit('audio', data.toString('base64'));
+          // ElevenLabs sometimes sends errors as binary-framed JSON — decode first
+          const text = data.toString('utf8');
+          try {
+            const msg = JSON.parse(text);
+            console.log('[tts] Binary frame decoded as JSON:', text.slice(0, 300));
+            if (msg.audio) {
+              this.emit('audio', msg.audio);
+            } else if (msg.isFinal) {
+              console.log('[tts] Received isFinal (binary frame) — closing turn');
+              this._speaking = false;
+              this._ws       = null;
+              this.emit('done');
+            } else if (msg.error || msg.detail || msg.message) {
+              console.error('[tts] ElevenLabs error (binary frame):', text);
+              this.emit('error', new Error(msg.message || msg.detail?.message || msg.error));
+            } else {
+              console.log('[tts] Unhandled binary JSON (no audio/isFinal/error):', text.slice(0, 200));
+            }
+          } catch {
+            // Genuine binary PCM audio
+            console.log(`[tts] Received binary audio chunk: ${data.length} bytes`);
+            this.emit('audio', data.toString('base64'));
+          }
         } else {
           let msg;
           try { msg = JSON.parse(data.toString()); } catch { return; }
@@ -119,8 +140,8 @@ class TTSService extends EventEmitter {
         reject(err);
       });
 
-      ws.on('close', () => {
-        console.log('[tts] ElevenLabs TTS WebSocket closed');
+      ws.on('close', (code, reason) => {
+        console.log(`[tts] ElevenLabs TTS WebSocket closed — code: ${code}, reason: ${reason?.toString() || '(none)'}`);
         this._speaking = false;
         if (this._ws === ws) this._ws = null;
       });
