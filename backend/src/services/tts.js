@@ -23,9 +23,10 @@ class TTSService extends EventEmitter {
    */
   constructor(voiceId) {
     super();
-    this._ws = null;
-    this._voiceId = voiceId || process.env.ELEVENLABS_VOICE_ID;
-    this._speaking = false;
+    this._ws             = null;
+    this._voiceId        = voiceId || (process.env.ELEVENLABS_VOICE_ID || '').trim();
+    this._speaking       = false;
+    this._connectPromise = null; // deduplicate concurrent connect() calls
   }
 
   get speaking() {
@@ -33,22 +34,38 @@ class TTSService extends EventEmitter {
   }
 
   /**
-   * Open a fresh TTS WebSocket for one response turn.
+   * Open a TTS WebSocket for one response turn.
+   * If a connection attempt is already in progress, the same Promise is
+   * returned so concurrent _speakSentence calls share one socket.
    * @returns {Promise<void>}
    */
   connect() {
-    return new Promise((resolve, reject) => {
-      const apiKey = (process.env.ELEVENLABS_API_KEY || '').trim();
+    // Already open — reuse
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      return Promise.resolve();
+    }
+    // Already connecting — share the in-flight promise
+    if (this._connectPromise) {
+      return this._connectPromise;
+    }
+
+    const apiKey = (process.env.ELEVENLABS_API_KEY || '').trim();
+
+    this._connectPromise = new Promise((resolve, reject) => {
       const ws = new WebSocket(TTS_URL(this._voiceId), {
         headers: { 'xi-api-key': apiKey },
       });
 
       ws.on('open', () => {
+        this._ws             = ws;
+        this._connectPromise = null;
+        this._speaking       = true;
+
         // Send voice configuration as the first message
-        const initMsg = {
+        ws.send(JSON.stringify({
           text: ' ',
           voice_settings: {
-            stability: 0.5,
+            stability:        0.5,
             similarity_boost: 0.8,
             use_speaker_boost: false,
           },
@@ -56,35 +73,24 @@ class TTSService extends EventEmitter {
             chunk_length_schedule: [50, 90, 120, 150],
           },
           xi_api_key: apiKey,
-        };
-        ws.send(JSON.stringify(initMsg));
-        this._speaking = true;
+        }));
+
         console.log('[tts] ElevenLabs TTS WebSocket open');
         resolve();
       });
 
       ws.on('message', (data) => {
-        // ElevenLabs sends either binary audio frames or JSON status messages
         if (data instanceof Buffer) {
-          // Raw binary → base64 for Twilio
-          const payload = data.toString('base64');
-          this.emit('audio', payload);
+          this.emit('audio', data.toString('base64'));
         } else {
           let msg;
-          try {
-            msg = JSON.parse(data.toString());
-          } catch {
-            return;
-          }
+          try { msg = JSON.parse(data.toString()); } catch { return; }
 
-          if (msg.audio) {
-            // Some ElevenLabs versions send base64 in JSON
-            this.emit('audio', msg.audio);
-          }
+          if (msg.audio) this.emit('audio', msg.audio);
 
           if (msg.isFinal) {
             this._speaking = false;
-            this._ws = null;
+            this._ws       = null;
             this.emit('done');
           }
 
@@ -97,7 +103,9 @@ class TTSService extends EventEmitter {
 
       ws.on('error', (err) => {
         console.error('[tts] WebSocket error:', err.message);
-        this._speaking = false;
+        this._connectPromise = null;
+        this._speaking       = false;
+        this._ws             = null;
         this.emit('error', err);
         reject(err);
       });
@@ -105,16 +113,15 @@ class TTSService extends EventEmitter {
       ws.on('close', () => {
         console.log('[tts] ElevenLabs TTS WebSocket closed');
         this._speaking = false;
-        this._ws = null;
+        if (this._ws === ws) this._ws = null;
       });
-
-      this._ws = ws;
     });
+
+    return this._connectPromise;
   }
 
   /**
    * Send a sentence of text to ElevenLabs for synthesis.
-   * Call connect() before the first sendText() of each turn.
    * @param {string} text
    */
   sendText(text) {
@@ -122,25 +129,22 @@ class TTSService extends EventEmitter {
       console.warn('[tts] sendText called but WebSocket is not open');
       return;
     }
-    const msg = { text: text + ' ', flush: false };
-    this._ws.send(JSON.stringify(msg));
+    this._ws.send(JSON.stringify({ text: text + ' ', flush: false }));
   }
 
   /**
    * Signal end-of-input to ElevenLabs — triggers final audio flush.
-   * ElevenLabs will close the connection after sending remaining audio.
    */
   flush() {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
-    const msg = { text: '', flush: true };
-    this._ws.send(JSON.stringify(msg));
+    this._ws.send(JSON.stringify({ text: '', flush: true }));
   }
 
   /**
    * Abort the current TTS turn immediately (barge-in support).
-   * The caller is responsible for sending a 'clear' message to Twilio.
    */
   abort() {
+    this._connectPromise = null;
     if (this._ws) {
       this._ws.terminate();
       this._ws = null;
