@@ -122,7 +122,7 @@ class TranscriptionService extends EventEmitter {
     try {
       const wav  = mulawToWav(raw);
       const form = new FormData();
-      form.append('audio', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
+      form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
       form.append('model_id', 'scribe_v2');
       form.append('language_code', 'en');
 
