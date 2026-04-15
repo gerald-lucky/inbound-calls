@@ -347,6 +347,8 @@ tr:hover td { background: #fafafa; }
   padding: 1rem;
 }
 
+.modal-backdrop[hidden] { display: none; }
+
 .modal {
   background: var(--surface);
   border-radius: 12px;
