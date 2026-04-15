@@ -62,7 +62,7 @@ async function executeToolCall(toolName, toolInput) {
   }
 
   if (!tenant) {
-    return 'No resident found with that name or lot number. They may not be in the system, or the name might be spelled differently.';
+    return 'No resident found with that name or lot number. Ask the caller to spell their name letter by letter so you can try again with the correct spelling.';
   }
 
   console.log(`[llm] Found resident: ${tenant.first_name} ${tenant.last_name} (lot ${tenant.lot_number})`);
@@ -107,7 +107,9 @@ class LLMService extends EventEmitter {
     const systemPrompt = [
       this._systemPrompt,
       this._callerContext ? `\n\n${this._callerContext}` : '',
-      '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.',
+      '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
+      '\nIf a caller gives you their name and the account lookup fails, ask them to spell their name letter by letter (e.g. "Could you spell that out for me?") before trying the lookup again with the corrected spelling.' +
+      '\nIf a name sounds ambiguous or unclear from speech, always confirm the spelling before searching.',
     ].join('');
 
     let fullTextResponse = '';
