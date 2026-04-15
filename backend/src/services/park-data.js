@@ -13,14 +13,13 @@ const supabase = createClient(
  */
 function normalizePhone(phone) {
   if (!phone) return '';
-  // Keep leading + then strip all non-digits
   const hasPlus = phone.trim().startsWith('+');
   const digits = phone.replace(/\D/g, '');
   return hasPlus ? `+${digits}` : digits;
 }
 
 /**
- * Look up a tenant by their phone number (Twilio From field).
+ * Look up a tenant by phone number.
  * Tries the number as-is, then normalized.
  * @param {string} phoneNumber
  * @returns {Promise<object|null>}
@@ -42,9 +41,47 @@ async function lookupTenant(phoneNumber) {
 }
 
 /**
+ * Look up a tenant by first/last name (case-insensitive, partial match).
+ * @param {string} firstName
+ * @param {string} lastName
+ * @returns {Promise<object|null>}
+ */
+async function lookupTenantByName(firstName, lastName) {
+  let query = supabase.from('tenants').select('*');
+  if (firstName) query = query.ilike('first_name', `%${firstName.trim()}%`);
+  if (lastName)  query = query.ilike('last_name',  `%${lastName.trim()}%`);
+
+  const { data, error } = await query.limit(1).maybeSingle();
+  if (error) {
+    console.error('[park-data] Name lookup error:', error.message);
+    return null;
+  }
+  return data;
+}
+
+/**
+ * Look up a tenant by lot number (exact, case-insensitive).
+ * @param {string} lotNumber
+ * @returns {Promise<object|null>}
+ */
+async function lookupTenantByLot(lotNumber) {
+  const { data, error } = await supabase
+    .from('tenants')
+    .select('*')
+    .ilike('lot_number', lotNumber.trim())
+    .maybeSingle();
+
+  if (error) {
+    console.error('[park-data] Lot lookup error:', error.message);
+    return null;
+  }
+  return data;
+}
+
+/**
  * Get a tenant's payment history, newest first.
  * @param {string} tenantId
- * @param {number} months - How many recent months to return.
+ * @param {number} months
  * @returns {Promise<Array>}
  */
 async function getRecentPayments(tenantId, months = 6) {
@@ -65,7 +102,7 @@ async function getRecentPayments(tenantId, months = 6) {
 /**
  * Check whether the current calendar month has a payment recorded.
  * @param {string} tenantId
- * @returns {Promise<object|null>} Payment row if found, null if unpaid.
+ * @returns {Promise<object|null>}
  */
 async function getCurrentMonthPayment(tenantId) {
   const now = new Date();
@@ -85,20 +122,14 @@ async function getCurrentMonthPayment(tenantId) {
   return data;
 }
 
-/**
- * Format a date string for natural speech.
- * e.g. "2021-03-15" → "March 15, 2021"
- */
+// ── Formatting helpers ────────────────────────────────────────────────────────
+
 function fmtDate(dateStr) {
   if (!dateStr) return 'unknown';
   const d = new Date(dateStr + 'T00:00:00');
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 }
 
-/**
- * Format a YYYY-MM month_year string for natural speech.
- * e.g. "2025-04" → "April 2025"
- */
 function fmtMonthYear(monthYear) {
   if (!monthYear) return 'unknown';
   const [y, m] = monthYear.split('-');
@@ -106,22 +137,15 @@ function fmtMonthYear(monthYear) {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
 }
 
+// ── Context builders ──────────────────────────────────────────────────────────
+
 /**
- * Build the caller context string injected into Claude's system prompt.
- * This replaces the RAG vector search — all data is structured and pre-fetched
- * once at call start, adding zero per-turn latency.
- *
- * @param {string} phoneNumber - Twilio From field.
+ * Build the account context string for a known tenant.
+ * Used both for the phone-number pre-fetch and for tool call results.
+ * @param {object} tenant - Tenant row from the database.
  * @returns {Promise<string>}
  */
-async function buildCallerContext(phoneNumber) {
-  const tenant = await lookupTenant(phoneNumber);
-
-  if (!tenant) {
-    return `CALLER STATUS: Not found in system (phone: ${phoneNumber}).
-If asked about their account, let them know you can't locate their record and ask them to contact the office directly.`;
-  }
-
+async function buildAccountContext(tenant) {
   const [currentPayment, recentPayments] = await Promise.all([
     getCurrentMonthPayment(tenant.id),
     getRecentPayments(tenant.id, 6),
@@ -132,18 +156,18 @@ If asked about their account, let them know you can't locate their record and as
 
   const currentMonthStatus = currentPayment
     ? `PAID — $${Number(currentPayment.amount).toFixed(2)} on ${fmtDate(currentPayment.payment_date)}${currentPayment.status === 'partial' ? ' (partial)' : ''}`
-    : `UNPAID`;
+    : 'UNPAID';
 
   const historyLines = recentPayments.length
     ? recentPayments.map((p) => {
-        const label = fmtMonthYear(p.month_year);
-        const date  = fmtDate(p.payment_date);
+        const label  = fmtMonthYear(p.month_year);
+        const date   = fmtDate(p.payment_date);
         const status = p.status === 'partial' ? 'Partial payment' : p.status === 'waived' ? 'Waived' : 'Paid';
         return `  - ${label}: ${status} $${Number(p.amount).toFixed(2)} on ${date}`;
       }).join('\n')
     : '  No payment history on record.';
 
-  return `CALLER ACCOUNT:
+  return `RESIDENT ACCOUNT:
 Name: ${tenant.first_name} ${tenant.last_name}
 Lot: ${tenant.lot_number}
 Monthly Rent: $${Number(tenant.lot_rent_amount).toFixed(2)}/month
@@ -155,7 +179,33 @@ ${currentMonthLabel} (current month): ${currentMonthStatus}
 PAYMENT HISTORY (last 6 months):
 ${historyLines}
 
-Address the caller by their first name (${tenant.first_name}). Use the account information above to answer questions about rent, balance, and payment history accurately.`;
+Address the caller by their first name (${tenant.first_name}).`;
 }
 
-module.exports = { lookupTenant, getRecentPayments, getCurrentMonthPayment, buildCallerContext };
+/**
+ * Build the caller context injected into Claude's system prompt at call start.
+ * Looks up by phone number; if not found, tells Claude to use the lookup tool.
+ * @param {string} phoneNumber - Twilio From field.
+ * @returns {Promise<string>}
+ */
+async function buildCallerContext(phoneNumber) {
+  const tenant = await lookupTenant(phoneNumber);
+
+  if (!tenant) {
+    return `CALLER STATUS: Phone number ${phoneNumber} is not matched to any resident record.
+If the caller tells you their name or lot number, use the lookup_resident_account tool to find their account.
+Until you find their account, avoid making up any figures — just say you need their name or lot number to pull up the record.`;
+  }
+
+  return buildAccountContext(tenant);
+}
+
+module.exports = {
+  lookupTenant,
+  lookupTenantByName,
+  lookupTenantByLot,
+  getRecentPayments,
+  getCurrentMonthPayment,
+  buildAccountContext,
+  buildCallerContext,
+};

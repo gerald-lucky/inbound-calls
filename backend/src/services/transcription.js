@@ -6,7 +6,8 @@ const SCRIBE_URL        = 'https://api.elevenlabs.io/v1/speech-to-text';
 const SAMPLE_RATE       = 8000;
 const SILENCE_MS        = 1000;                  // flush after 1 s of silence
 const MIN_SPEECH_BYTES  = SAMPLE_RATE * 0.3;    // ignore clips shorter than 300 ms
-const SILENCE_RMS_THRESHOLD = 500;              // out of ~32 k max
+const SILENCE_RMS_THRESHOLD = 1500;             // raised: phone calls have background noise + agent echo
+const MIN_BARGE_FRAMES  = 5;                    // require ~100ms of sustained speech before barge-in fires
 
 // ─── µ-law helpers ────────────────────────────────────────────────────────────
 
@@ -66,10 +67,11 @@ function mulawToWav(mulawBuf) {
 class TranscriptionService extends EventEmitter {
   constructor() {
     super();
-    this._chunks       = [];
-    this._silenceTimer = null;
-    this._speaking     = false;
-    this._connected    = false;
+    this._chunks           = [];
+    this._silenceTimer     = null;
+    this._speaking         = false;
+    this._connected        = false;
+    this._speechFrameCount = 0; // consecutive above-threshold frames (barge-in debounce)
   }
 
   /**
@@ -91,15 +93,24 @@ class TranscriptionService extends EventEmitter {
     const silent = rms(buffer) < SILENCE_RMS_THRESHOLD;
 
     if (!silent) {
-      if (!this._speaking) {
+      this._speechFrameCount++;
+
+      // Require several consecutive loud frames before declaring speech started.
+      // This prevents a single noise spike or agent-voice echo from triggering barge-in.
+      if (!this._speaking && this._speechFrameCount >= MIN_BARGE_FRAMES) {
         this._speaking = true;
         this.emit('speech_started');
       }
       this._chunks.push(buffer);
       this._resetSilenceTimer();
-    } else if (this._speaking) {
-      // Keep accumulating during brief pauses so we don't clip word endings
-      this._chunks.push(buffer);
+    } else {
+      // Reset the consecutive-frame counter on any quiet frame
+      this._speechFrameCount = 0;
+
+      if (this._speaking) {
+        // Keep accumulating during brief pauses so we don't clip word endings
+        this._chunks.push(buffer);
+      }
     }
   }
 
@@ -153,9 +164,10 @@ class TranscriptionService extends EventEmitter {
 
   close() {
     clearTimeout(this._silenceTimer);
-    this._chunks   = [];
-    this._speaking = false;
-    this._connected = false;
+    this._chunks           = [];
+    this._speaking         = false;
+    this._connected        = false;
+    this._speechFrameCount = 0;
   }
 }
 

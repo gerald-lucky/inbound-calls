@@ -2,6 +2,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { EventEmitter } = require('events');
+const parkData = require('./park-data');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
@@ -9,11 +10,73 @@ const MODEL = 'claude-sonnet-4-6';
 // Sentence-boundary pattern — flush to TTS at natural speech breaks
 const SENTENCE_END = /[.!?]\s+|[.!?]$/;
 
+// ── Tools Claude can call to query the database ───────────────────────────────
+
+const TOOLS = [
+  {
+    name: 'lookup_resident_account',
+    description:
+      'Look up a resident\'s account, balance, and payment history by name or lot number. ' +
+      'Use this whenever the caller provides their name or lot number and you need their account details.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        first_name: {
+          type: 'string',
+          description: "Resident's first name (optional if lot_number is provided)",
+        },
+        last_name: {
+          type: 'string',
+          description: "Resident's last name (optional if lot_number is provided)",
+        },
+        lot_number: {
+          type: 'string',
+          description: "Resident's lot number (optional if name is provided)",
+        },
+      },
+    },
+  },
+];
+
+/**
+ * Execute a tool call requested by Claude.
+ * @param {string} toolName
+ * @param {object} toolInput
+ * @returns {Promise<string>} Result string to send back to Claude.
+ */
+async function executeToolCall(toolName, toolInput) {
+  if (toolName !== 'lookup_resident_account') {
+    return 'Unknown tool.';
+  }
+
+  const { first_name, last_name, lot_number } = toolInput;
+  console.log(`[llm] lookup_resident_account — name: "${first_name || ''} ${last_name || ''}".trim(), lot: "${lot_number || ''}"`);
+
+  let tenant = null;
+
+  if (lot_number) {
+    tenant = await parkData.lookupTenantByLot(lot_number);
+  }
+  if (!tenant && (first_name || last_name)) {
+    tenant = await parkData.lookupTenantByName(first_name, last_name);
+  }
+
+  if (!tenant) {
+    return 'No resident found with that name or lot number. They may not be in the system, or the name might be spelled differently.';
+  }
+
+  console.log(`[llm] Found resident: ${tenant.first_name} ${tenant.last_name} (lot ${tenant.lot_number})`);
+  return parkData.buildAccountContext(tenant);
+}
+
+// ── LLMService ────────────────────────────────────────────────────────────────
+
 /**
  * LLMService handles a single conversation with Claude Sonnet 4.6.
+ * Supports tool use so Claude can query the residents database by name/lot.
  *
  * @param {string} systemPrompt - Per-agent system prompt (from agent config or env var).
- * @param {string} callerContext - Pre-fetched tenant account info injected once at call start.
+ * @param {string} callerContext - Pre-fetched tenant account info (or "not found" hint).
  *
  * Events emitted:
  *   'sentence'  (text: string)     — complete sentence ready for TTS
@@ -26,13 +89,14 @@ class LLMService extends EventEmitter {
     this._systemPrompt = systemPrompt ||
       'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
     this._callerContext = callerContext || '';
-    /** @type {Array<{role: string, content: string}>} */
+    /** @type {Array<{role: string, content: string|Array}>} */
     this.conversationHistory = [];
   }
 
   /**
-   * Process a caller utterance: inject pre-fetched caller context, stream Claude's response,
-   * and emit sentence chunks as they become available.
+   * Process a caller utterance: stream Claude's response while supporting
+   * tool calls for live database lookups. Emits 'sentence' for each TTS chunk
+   * and 'done' when the full response is committed.
    *
    * @param {string} utterance
    * @param {AbortSignal} signal
@@ -43,51 +107,82 @@ class LLMService extends EventEmitter {
     const systemPrompt = [
       this._systemPrompt,
       this._callerContext ? `\n\n${this._callerContext}` : '',
-      '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally.',
+      '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.',
     ].join('');
 
-    let sentenceBuffer = '';
-    let fullResponse = '';
+    let fullTextResponse = '';
 
     try {
-      const stream = await anthropic.messages.stream(
-        {
-          model: MODEL,
-          max_tokens: 512,
-          system: systemPrompt,
-          messages: this.conversationHistory,
-        },
-        { signal },
-      );
-
-      for await (const event of stream) {
+      // Agentic loop: repeat until Claude stops requesting tool calls (max 5 turns)
+      for (let turn = 0; turn < 5; turn++) {
         if (signal?.aborted) break;
 
-        if (
-          event.type === 'content_block_delta' &&
-          event.delta?.type === 'text_delta'
-        ) {
-          const token = event.delta.text;
-          sentenceBuffer += token;
-          fullResponse += token;
+        let sentenceBuffer = '';
+
+        const stream = anthropic.messages.stream(
+          {
+            model:    MODEL,
+            max_tokens: 512,
+            tools:    TOOLS,
+            system:   systemPrompt,
+            messages: this.conversationHistory,
+          },
+          { signal },
+        );
+
+        // Stream text to TTS in real-time as tokens arrive
+        stream.on('text', (token) => {
+          if (signal?.aborted) return;
+          sentenceBuffer   += token;
+          fullTextResponse += token;
 
           const match = sentenceBuffer.search(SENTENCE_END);
           if (match !== -1) {
             const sentence = sentenceBuffer.slice(0, match + 1).trim();
-            sentenceBuffer = sentenceBuffer.slice(match + 1);
+            sentenceBuffer  = sentenceBuffer.slice(match + 1);
             if (sentence) this.emit('sentence', sentence);
           }
+        });
+
+        // Wait for the complete response (text + any tool_use blocks)
+        const finalMessage = await stream.finalMessage();
+
+        // Flush any trailing text that didn't end with sentence punctuation
+        if (sentenceBuffer.trim() && !signal?.aborted) {
+          this.emit('sentence', sentenceBuffer.trim());
         }
-      }
 
-      const remainder = sentenceBuffer.trim();
-      if (remainder && !signal?.aborted) {
-        this.emit('sentence', remainder);
-      }
+        // Commit this assistant turn to history
+        this.conversationHistory.push({
+          role:    'assistant',
+          content: finalMessage.content,
+        });
 
-      if (!signal?.aborted) {
-        this.conversationHistory.push({ role: 'assistant', content: fullResponse });
-        this.emit('done', fullResponse);
+        // If no tool calls, we're done
+        if (finalMessage.stop_reason !== 'tool_use' || signal?.aborted) {
+          if (!signal?.aborted) {
+            this.emit('done', fullTextResponse);
+          }
+          break;
+        }
+
+        // Execute every tool call Claude requested
+        const toolResults = [];
+        for (const block of finalMessage.content) {
+          if (block.type !== 'tool_use') continue;
+          const result = await executeToolCall(block.name, block.input);
+          toolResults.push({
+            type:        'tool_result',
+            tool_use_id: block.id,
+            content:     result,
+          });
+        }
+
+        if (signal?.aborted) break;
+
+        // Feed results back so Claude can respond
+        this.conversationHistory.push({ role: 'user', content: toolResults });
+        // Loop continues → Claude sees the tool results and gives a final answer
       }
     } catch (err) {
       if (err.name === 'AbortError' || signal?.aborted) {
@@ -100,13 +195,7 @@ class LLMService extends EventEmitter {
   }
 
   /**
-   * Non-blocking lead extraction: after a turn completes, ask Claude
-   * whether the caller provided contact information worth capturing.
-   * Returns null if no lead was detected, or { name, email, notes } if one was.
-   *
-   * This is intentionally a separate, non-streaming call so it never
-   * affects call latency — it runs entirely in the background.
-   *
+   * Non-blocking lead extraction after a turn completes.
    * @param {string} callerNumber
    * @returns {Promise<{name?:string, email?:string, notes:string}|null>}
    */
@@ -114,18 +203,19 @@ class LLMService extends EventEmitter {
     if (this.conversationHistory.length < 2) return null;
 
     const transcript = this.conversationHistory
+      .filter((m) => typeof m.content === 'string')
       .map((m) => `${m.role === 'user' ? 'Caller' : 'Agent'}: ${m.content}`)
       .join('\n');
 
     try {
       const response = await anthropic.messages.create({
-        model: MODEL,
+        model:      MODEL,
         max_tokens: 200,
         system:
-          'You are a lead extraction assistant. Given a call transcript, determine if the caller provided contact information or expressed clear interest in a product or service. Respond with valid JSON only: {"is_lead": true/false, "name": "...", "email": "...", "notes": "..."}. Use null for missing fields. Keep notes under 100 characters.',
+          'You are a lead extraction assistant. Given a call transcript, determine if the caller provided contact information or expressed clear interest. Respond with valid JSON only: {"is_lead": true/false, "name": "...", "email": "...", "notes": "..."}. Use null for missing fields. Keep notes under 100 characters.',
         messages: [
           {
-            role: 'user',
+            role:    'user',
             content: `Caller phone: ${callerNumber}\n\nTranscript:\n${transcript}`,
           },
         ],
@@ -143,7 +233,6 @@ class LLMService extends EventEmitter {
         notes: parsed.notes || null,
       };
     } catch {
-      // Lead extraction is best-effort; failures are silent
       return null;
     }
   }
