@@ -41,22 +41,51 @@ async function lookupTenant(phoneNumber) {
 }
 
 /**
- * Look up a tenant by first/last name (case-insensitive, partial match).
+ * Look up a tenant by name using multiple fallback strategies.
+ * Tries increasingly broad searches so accent/transcription variations still match.
+ *   1. Both first AND last name match
+ *   2. First name only
+ *   3. Last name only
  * @param {string} firstName
  * @param {string} lastName
  * @returns {Promise<object|null>}
  */
 async function lookupTenantByName(firstName, lastName) {
-  let query = supabase.from('tenants').select('*');
-  if (firstName) query = query.ilike('first_name', `%${firstName.trim()}%`);
-  if (lastName)  query = query.ilike('last_name',  `%${lastName.trim()}%`);
+  const fn = (firstName || '').trim();
+  const ln = (lastName  || '').trim();
 
-  const { data, error } = await query.limit(1).maybeSingle();
-  if (error) {
-    console.error('[park-data] Name lookup error:', error.message);
-    return null;
+  // Strategy 1: both names provided and both match
+  if (fn && ln) {
+    const { data, error } = await supabase
+      .from('tenants').select('*')
+      .ilike('first_name', `%${fn}%`)
+      .ilike('last_name',  `%${ln}%`)
+      .limit(1).maybeSingle();
+    if (error) console.error('[park-data] Name lookup (both) error:', error.message);
+    if (data) return data;
   }
-  return data;
+
+  // Strategy 2: first name only
+  if (fn) {
+    const { data, error } = await supabase
+      .from('tenants').select('*')
+      .ilike('first_name', `%${fn}%`)
+      .limit(1).maybeSingle();
+    if (error) console.error('[park-data] Name lookup (first) error:', error.message);
+    if (data) return data;
+  }
+
+  // Strategy 3: last name only
+  if (ln) {
+    const { data, error } = await supabase
+      .from('tenants').select('*')
+      .ilike('last_name', `%${ln}%`)
+      .limit(1).maybeSingle();
+    if (error) console.error('[park-data] Name lookup (last) error:', error.message);
+    if (data) return data;
+  }
+
+  return null;
 }
 
 /**

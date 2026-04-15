@@ -110,8 +110,9 @@ class LLMService extends EventEmitter {
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
       '\nYou are multilingual. You speak English, Spanish, Hindi, Punjabi, Gujarati, Bengali, Tamil, Telugu, Urdu, and Marathi fluently. If the caller speaks any of these languages, asks if you speak their language, or asks you to switch languages, immediately switch and continue the entire conversation in that language. Confirm warmly in that language (e.g. in Hindi: "हाँ, मैं हिंदी में बात कर सकती हूँ।"). Stay in that language for the rest of the call once switched.' +
       '\nWhenever you are about to call the lookup_resident_account tool, first say a brief hold phrase in whatever language you are speaking — then call the tool.' +
-      '\nIf a caller gives you their name and the account lookup fails, ask them to spell their name letter by letter before trying the lookup again with the corrected spelling.' +
-      '\nIf a name sounds ambiguous or unclear from speech, always confirm the spelling before searching.',
+      '\nWhen a caller spells out their name letter by letter (e.g. "J-O-S-E" or "M, A, R, I, A"), reconstruct the full name from those letters and pass it to the lookup tool — do not pass the individual letters.' +
+      '\nIf a caller gives their name and the lookup fails, ask them to spell it letter by letter. After they spell it, attempt the lookup again with the reconstructed spelling.' +
+      '\nIf a name still cannot be found after spelling confirmation, ask for their lot number as an alternative way to pull up the account.',
     ].join('');
 
     let fullTextResponse = '';
