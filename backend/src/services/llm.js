@@ -108,6 +108,7 @@ class LLMService extends EventEmitter {
       this._systemPrompt,
       this._callerContext ? `\n\n${this._callerContext}` : '',
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
+      '\nWhenever you are about to call the lookup_resident_account tool, first say a brief phrase out loud such as "Give me just a moment" or "Let me pull that up for you" — then call the tool. This lets the caller know you are looking something up.' +
       '\nIf a caller gives you their name and the account lookup fails, ask them to spell their name letter by letter (e.g. "Could you spell that out for me?") before trying the lookup again with the corrected spelling.' +
       '\nIf a name sounds ambiguous or unclear from speech, always confirm the spelling before searching.',
     ].join('');
