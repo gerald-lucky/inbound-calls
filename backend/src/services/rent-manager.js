@@ -181,15 +181,16 @@ async function getPaymentHistory(tenantId, limit = 8) {
 
 // ── Vacancy report ────────────────────────────────────────────────────────────
 
-async function getVacancyReport() {
-  // Fetch all units from RM
+async function getVacancyReport(communityName) {
   const pagesize = 500;
-  let allUnits = [];
-  let page = 1;
+  let allUnits   = [];
+  let page       = 1;
+
   while (true) {
-    const data  = await rmGet(`/Units?pagesize=${pagesize}&pagenumber=${page}`);
+    // embeds=CurrentTenant: units without a CurrentTenant are vacant
+    const data  = await rmGet(`/Units?embeds=CurrentTenant&pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-    allUnits = allUnits.concat(items);
+    allUnits    = allUnits.concat(items);
     if (items.length < pagesize) break;
     page++;
     if (page > 20) break;
@@ -197,25 +198,28 @@ async function getVacancyReport() {
 
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
 
-  // Count by vacancy status — RM uses various field names
-  const vacant   = allUnits.filter(u => {
-    const status = (u.VacancyStatus || u.Status || u.UnitStatus || '').toLowerCase();
-    return status.includes('vacant') || status === 'v' || u.IsVacant === true;
-  });
-  const occupied = allUnits.filter(u => {
-    const status = (u.VacancyStatus || u.Status || u.UnitStatus || '').toLowerCase();
-    return status.includes('occupied') || status === 'o' || u.IsVacant === false;
-  });
-  const other    = allUnits.length - vacant.length - occupied.length;
+  // Filter by community/property name if provided
+  let units = allUnits;
+  if (communityName) {
+    const q = communityName.toLowerCase();
+    units = allUnits.filter(u =>
+      (u.Property?.Name || u.PropertyName || u.CommunityName || '').toLowerCase().includes(q)
+    );
+    if (!units.length) return `No units found for community "${communityName}". Try without a filter to see all.`;
+  }
 
-  const vacantList = vacant.slice(0, 20).map(u => u.UnitNumber || u.Name || u.UnitID).join(', ');
+  const vacant   = units.filter(u => !u.CurrentTenant && !(u.CurrentTenants?.length));
+  const occupied = units.filter(u =>  u.CurrentTenant ||  (u.CurrentTenants?.length > 0));
 
-  return `VACANCY REPORT (Rent Manager):
-Total Units: ${allUnits.length}
+  const vacantList = vacant.slice(0, 30).map(u => u.UnitNumber || u.Name || u.UnitID).join(', ');
+  const header     = communityName ? `VACANCY REPORT — ${communityName}` : 'VACANCY REPORT (All Communities)';
+
+  return `${header}:
+Total Units: ${units.length}
 Occupied: ${occupied.length}
-Vacant: ${vacant.length}${other > 0 ? `\nOther/Unknown Status: ${other}` : ''}
-Vacancy Rate: ${allUnits.length ? ((vacant.length / allUnits.length) * 100).toFixed(1) : 0}%
-${vacant.length ? `\nVacant Units: ${vacantList}${vacant.length > 20 ? ` ... and ${vacant.length - 20} more` : ''}` : ''}`;
+Vacant: ${vacant.length}
+Vacancy Rate: ${units.length ? ((vacant.length / units.length) * 100).toFixed(1) : 0}%
+${vacant.length ? `\nVacant Units: ${vacantList}${vacant.length > 30 ? ` ... and ${vacant.length - 30} more` : ''}` : '\nAll units are occupied.'}`;
 }
 
 

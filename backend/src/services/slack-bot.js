@@ -60,10 +60,12 @@ const TOOLS = [
   },
   {
     name: 'get_vacancy_report',
-    description: 'Get vacancy and occupancy stats for the property — total units, occupied, vacant counts, and list of vacant unit numbers.',
+    description: 'Get vacancy and occupancy stats — total units, occupied, vacant counts, and vacant unit numbers. Optionally filter by community/property name.',
     input_schema: {
       type: 'object',
-      properties: {},
+      properties: {
+        community_name: { type: 'string', description: 'Optional community or property name to filter by (e.g. "Baudin", "Messer")' },
+      },
     },
   },
 ];
@@ -104,7 +106,7 @@ async function executeTool(name, input) {
 
   if (name === 'get_vacancy_report') {
     try {
-      return await rm.getVacancyReport();
+      return await rm.getVacancyReport(input.community_name);
     } catch (err) {
       return `Could not fetch vacancy report: ${err.message}`;
     }
