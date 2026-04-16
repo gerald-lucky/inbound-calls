@@ -104,6 +104,7 @@ async function getAllTenants() {
 
   _tenantCache     = all;
   _tenantCacheTime = Date.now();
+  if (all[0]) console.log('[rm] Tenant sample keys:', Object.keys(all[0]).join(', '));
   console.log(`[rm] Tenant cache loaded — ${_tenantCache.length} tenants`);
   return _tenantCache;
 }
@@ -207,7 +208,7 @@ async function getVacancyReport(communityName) {
   let allUnits   = [];
   let page       = 1;
   while (true) {
-    const data  = await rmGet(`/Units?embeds=CurrentTenant&pagesize=${pagesize}&pagenumber=${page}`);
+    const data  = await rmGet(`/Units?pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     allUnits    = allUnits.concat(items);
     if (items.length < pagesize) break;
@@ -215,24 +216,23 @@ async function getVacancyReport(communityName) {
   }
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
 
-  // Log first unit structure to understand CurrentTenant shape
-  if (allUnits[0]) {
-    const u0 = allUnits[0];
-    console.log('[rm] Unit sample keys:', Object.keys(u0).join(', '));
-    const ct = u0.CurrentTenant ?? u0.CurrentTenants ?? u0.Tenants;
-    console.log('[rm] CurrentTenant sample:', JSON.stringify(ct)?.slice(0, 120));
-  }
+  const [tenants, propMap] = await Promise.all([getAllTenants(), getPropertyMap()]);
 
-  const propMap = await getPropertyMap();
+  // Build occupied set from tenants — check every likely field name
+  if (tenants[0]) console.log('[rm] Tenant keys for occ check:', Object.keys(tenants[0]).join(', '));
+  const occupiedIDs = new Set(
+    tenants.flatMap(t => {
+      const ids = [];
+      if (t.UnitID)       ids.push(Number(t.UnitID));
+      if (t.CurrentUnitID) ids.push(Number(t.CurrentUnitID));
+      if (t.LotID)        ids.push(Number(t.LotID));
+      (t.Units || t.CurrentUnits || []).forEach(u => u.UnitID && ids.push(Number(u.UnitID)));
+      return ids;
+    })
+  );
+  console.log(`[rm] Occupied unit IDs found: ${occupiedIDs.size}`);
 
-  // A unit is occupied if CurrentTenant is a non-empty object/array
-  function isOccupied(u) {
-    const ct = u.CurrentTenant ?? u.CurrentTenants ?? u.Tenants;
-    if (!ct) return false;
-    if (Array.isArray(ct)) return ct.length > 0;
-    if (typeof ct === 'object') return Object.keys(ct).length > 0;
-    return !!ct;
-  }
+  const isOccupied = u => occupiedIDs.has(Number(u.UnitID));
 
   // Filter by community/property name if requested
   let units = allUnits;
