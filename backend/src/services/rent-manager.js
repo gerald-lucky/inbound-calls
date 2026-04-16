@@ -96,10 +96,10 @@ async function getAllTenants() {
     const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     all = all.concat(items);
-    const total = data?.TotalCount ?? data?.totalCount ?? items.length;
-    console.log(`[rm] Tenants page ${page}: ${items.length} items (total reported: ${total})`);
-    if (items.length < pagesize || all.length >= total) break;
+    console.log(`[rm] Tenants page ${page}: ${items.length} items`);
+    if (items.length < pagesize) break;
     page++;
+    if (page > 20) break; // safety cap
   }
 
   _tenantCache     = all;
@@ -171,12 +171,8 @@ async function lookupTenantByUnit(unitNumber) {
 
 async function getPaymentHistory(tenantId, limit = 8) {
   try {
-    const data = await rmGet(
-      `/Transactions?` +
-      `filters[]=TenantID,eq,${tenantId}&` +
-      `orderby=TransactionDate desc&pagesize=${limit}`
-    );
-    return data?.Items ?? data?.items ?? [];
+    const data = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${limit}`);
+    return data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
   } catch (err) {
     console.error('[rm] getPaymentHistory:', err.message);
     return [];
