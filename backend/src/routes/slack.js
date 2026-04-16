@@ -94,15 +94,17 @@ router.post('/events', async (req, res) => {
 
   console.log(`[slack] "${text}" from ${event.user} in ${event.channel}`);
 
+  const threadTs = event.thread_ts || event.ts;
+
   try {
-    const reply = await processSlackMessage(text);
-    await postMessage(event.channel, reply, event.thread_ts || event.ts);
+    const reply = await processSlackMessage(text, threadTs);
+    await postMessage(event.channel, reply, threadTs);
   } catch (err) {
     console.error('[slack] Error processing message:', err.message);
     await postMessage(
       event.channel,
       `Sorry, I ran into an error: ${err.message}`,
-      event.thread_ts || event.ts
+      threadTs
     );
   }
 });

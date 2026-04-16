@@ -115,13 +115,34 @@ async function executeTool(name, input) {
   return 'Unknown tool.';
 }
 
+// ── Thread memory (keyed by Slack thread_ts) ─────────────────────────────────
+
+const _threads    = new Map(); // threadTs -> { history: [], lastActive: number }
+const THREAD_TTL  = 2 * 60 * 60 * 1000; // expire after 2 hours of inactivity
+const MAX_HISTORY = 40; // max stored message objects (~20 back-and-forth turns)
+
+function getHistory(threadTs) {
+  if (!threadTs) return [];
+  const entry = _threads.get(threadTs);
+  if (!entry) return [];
+  if (Date.now() - entry.lastActive > THREAD_TTL) { _threads.delete(threadTs); return []; }
+  return entry.history;
+}
+
+function saveHistory(threadTs, history) {
+  if (!threadTs) return;
+  const trimmed = history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
+  _threads.set(threadTs, { history: trimmed, lastActive: Date.now() });
+}
+
 /**
  * Process a Slack message from a teammate and return a text response.
- * @param {string} userText - The message text (bot mention already stripped).
+ * @param {string} userText  - The message text (bot mention already stripped).
+ * @param {string} threadTs  - Slack thread_ts used as conversation key.
  * @returns {Promise<string>}
  */
-async function processSlackMessage(userText) {
-  const messages = [{ role: 'user', content: userText }];
+async function processSlackMessage(userText, threadTs) {
+  const messages = [...getHistory(threadTs), { role: 'user', content: userText }];
 
   for (let turn = 0; turn < 5; turn++) {
     const response = await anthropic.messages.create({
@@ -135,12 +156,13 @@ async function processSlackMessage(userText) {
     messages.push({ role: 'assistant', content: response.content });
 
     if (response.stop_reason !== 'tool_use') {
-      // Extract text from response
-      return response.content
+      const reply = response.content
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join('')
         .trim();
+      saveHistory(threadTs, messages);
+      return reply;
     }
 
     // Execute tool calls
@@ -153,6 +175,7 @@ async function processSlackMessage(userText) {
     messages.push({ role: 'user', content: toolResults });
   }
 
+  saveHistory(threadTs, messages);
   return 'I hit the maximum number of lookup steps. Please try a more specific query.';
 }
 
