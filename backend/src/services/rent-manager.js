@@ -72,17 +72,31 @@ async function rmPost(path, body = {}, retry = true) {
   return res.json();
 }
 
-// ── Tenant lookup ─────────────────────────────────────────────────────────────
+// ── Tenant list cache (5 min TTL) ─────────────────────────────────────────────
 
-const TENANT_EMBEDS = 'embeds[]=PhoneNumbers&embeds[]=Units';
+let _tenantCache     = null;
+let _tenantCacheTime = 0;
+const TENANT_CACHE_TTL = 5 * 60 * 1000;
+
+async function getAllTenants() {
+  if (_tenantCache && Date.now() - _tenantCacheTime < TENANT_CACHE_TTL) return _tenantCache;
+  const data = await rmGet('/tenants?embeds[]=PhoneNumbers&embeds[]=Units&pagesize=500');
+  _tenantCache     = data?.items ?? [];
+  _tenantCacheTime = Date.now();
+  console.log(`[rm] Tenant cache loaded — ${_tenantCache.length} tenants`);
+  return _tenantCache;
+}
+
+// ── Tenant lookup ─────────────────────────────────────────────────────────────
 
 async function lookupTenantByPhone(phoneNumber) {
   const digits = (phoneNumber || '').replace(/\D/g, '');
+  if (!digits) return null;
   try {
-    const data = await rmGet(
-      `/tenants?${TENANT_EMBEDS}&filterExpression=PhoneNumbers.PhoneNumber,ct,${digits}&pagesize=1`
-    );
-    const tenant = data?.items?.[0] ?? null;
+    const tenants = await getAllTenants();
+    const tenant  = tenants.find(t =>
+      (t.PhoneNumbers || []).some(p => (p.PhoneNumber || '').replace(/\D/g, '').includes(digits))
+    ) ?? null;
     if (tenant) console.log(`[rm] Phone match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
   } catch (err) {
@@ -92,38 +106,38 @@ async function lookupTenantByPhone(phoneNumber) {
 }
 
 async function lookupTenantByName(firstName, lastName) {
-  const fn = (firstName || '').trim();
-  const ln = (lastName  || '').trim();
+  const fn = (firstName || '').trim().toLowerCase();
+  const ln = (lastName  || '').trim().toLowerCase();
+  if (!fn && !ln) return null;
+  try {
+    const tenants = await getAllTenants();
 
-  // Use filterExpression with proper RM syntax — filters at API level, no pagination needed
-  const attempts = [];
-  if (fn && ln) attempts.push(`filterExpression=LastName,eq,${encodeURIComponent(ln)};FirstName,eq,${encodeURIComponent(fn)}`);
-  if (fn && ln) attempts.push(`filterExpression=LastName,ct,${encodeURIComponent(ln)};FirstName,ct,${encodeURIComponent(fn)}`);
-  if (ln)       attempts.push(`filterExpression=LastName,eq,${encodeURIComponent(ln)}`);
-  if (fn)       attempts.push(`filterExpression=FirstName,eq,${encodeURIComponent(fn)}`);
-  if (ln)       attempts.push(`filterExpression=LastName,ct,${encodeURIComponent(ln)}`);
+    // Exact match first, then partial
+    const match = (t, exact) => {
+      const tfn = (t.FirstName || '').toLowerCase();
+      const tln = (t.LastName  || '').toLowerCase();
+      if (fn && ln) return exact ? (tfn === fn && tln === ln) : (tfn.includes(fn) && tln.includes(ln));
+      if (ln)       return exact ? tln === ln : tln.includes(ln);
+      return          exact ? tfn === fn : tfn.includes(fn);
+    };
 
-  for (const filter of attempts) {
-    try {
-      const data   = await rmGet(`/tenants?${TENANT_EMBEDS}&${filter}&pagesize=5`);
-      const tenant = data?.items?.[0];
-      if (tenant) {
-        console.log(`[rm] Name match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
-        return tenant;
-      }
-    } catch (err) {
-      console.error('[rm] lookupTenantByName attempt:', err.message);
-    }
+    const tenant = tenants.find(t => match(t, true)) ?? tenants.find(t => match(t, false)) ?? null;
+    if (tenant) console.log(`[rm] Name match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
+    return tenant;
+  } catch (err) {
+    console.error('[rm] lookupTenantByName:', err.message);
+    return null;
   }
-  return null;
 }
 
 async function lookupTenantByUnit(unitNumber) {
+  const unit = (unitNumber || '').trim().toLowerCase();
+  if (!unit) return null;
   try {
-    const data = await rmGet(
-      `/tenants?${TENANT_EMBEDS}&filterExpression=Units.UnitNumber,eq,${encodeURIComponent(unitNumber.trim())}&pagesize=1`
-    );
-    const tenant = data?.items?.[0] ?? null;
+    const tenants = await getAllTenants();
+    const tenant  = tenants.find(t =>
+      (t.Units || []).some(u => (u.UnitNumber || '').toLowerCase() === unit)
+    ) ?? null;
     if (tenant) console.log(`[rm] Unit match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
   } catch (err) {
