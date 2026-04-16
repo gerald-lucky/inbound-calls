@@ -10,21 +10,18 @@ const _processed = new Set();
 
 // ── Signature verification ────────────────────────────────────────────────────
 
-function verifySlackSignature(rawBody, headers) {
+function verifySlackSignature(req) {
   const secret    = process.env.SLACK_SIGNING_SECRET || '';
-  const timestamp = headers['x-slack-request-timestamp'] || '';
-  const signature = headers['x-slack-signature'] || '';
+  const timestamp = req.headers['x-slack-request-timestamp'] || '';
+  const signature = req.headers['x-slack-signature'] || '';
+  const rawBody   = req.rawBody || '';
 
-  if (!secret) return true; // skip in dev if not set
+  if (!secret) return true; // skip if not configured
 
-  // Reject requests older than 5 minutes (replay attack protection)
   if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
 
   const base = `v0:${timestamp}:${rawBody}`;
-  const mine = 'v0=' + crypto
-    .createHmac('sha256', secret)
-    .update(base)
-    .digest('hex');
+  const mine = 'v0=' + crypto.createHmac('sha256', secret).update(base).digest('hex');
 
   try {
     return crypto.timingSafeEqual(Buffer.from(mine), Buffer.from(signature));
@@ -54,19 +51,11 @@ async function postMessage(channel, text, threadTs) {
 
 // ── Route: POST /slack/events ─────────────────────────────────────────────────
 
-// Use raw body for signature verification; parse manually
-router.post('/events', express.raw({ type: 'application/json' }), async (req, res) => {
-  const rawBody = req.body.toString();
-  let payload;
+// Body already parsed by global express.json(); rawBody captured via verify option
+router.post('/events', async (req, res) => {
+  const payload = req.body;
 
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    return res.status(400).send('Bad JSON');
-  }
-
-  // Verify Slack signature
-  if (!verifySlackSignature(rawBody, req.headers)) {
+  if (!verifySlackSignature(req)) {
     console.warn('[slack] Invalid signature');
     return res.status(403).send('Forbidden');
   }

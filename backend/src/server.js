@@ -23,7 +23,10 @@ const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
 
 app.use(cors());
-app.use(express.json());
+// Capture raw body for Slack signature verification before JSON parsing
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf.toString(); },
+}));
 app.use(express.urlencoded({ extended: false }));
 
 app.use(express.static(path.join(__dirname, '../../frontend')));
