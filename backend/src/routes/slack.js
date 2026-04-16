@@ -30,26 +30,51 @@ function verifySlackSignature(req) {
   }
 }
 
-// ── Slack Web API helper ──────────────────────────────────────────────────────
+// ── Slack Web API helpers ─────────────────────────────────────────────────────
+
+function slackToken() { return (process.env.SLACK_BOT_TOKEN || '').trim(); }
 
 async function postMessage(channel, text, threadTs) {
   const body = { channel, text };
   if (threadTs) body.thread_ts = threadTs;
 
-  const token = (process.env.SLACK_BOT_TOKEN || '').trim();
-  console.log(`[slack] postMessage — token prefix: ${token.slice(0, 12)}...`);
-
   const res = await fetch('https://slack.com/api/chat.postMessage', {
     method:  'POST',
-    headers: {
-      Authorization:  `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${slackToken()}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 
   const data = await res.json();
-  if (!data.ok) console.error('[slack] postMessage error:', data.error, '| needed_scopes:', data.needed || '');
+  if (!data.ok) console.error('[slack] postMessage error:', data.error);
+}
+
+// Fetch prior thread messages and rebuild as Claude-compatible history
+async function fetchThreadHistory(channel, threadTs, currentMsgTs) {
+  try {
+    const res  = await fetch(
+      `https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=50`,
+      { headers: { Authorization: `Bearer ${slackToken()}` } }
+    );
+    const data = await res.json();
+    if (!data.ok || !data.messages?.length) return [];
+
+    const history = [];
+    for (const msg of data.messages) {
+      if (msg.ts === currentMsgTs) continue; // skip the message we're currently processing
+      const text = (msg.text || '').replace(/<@[A-Z0-9]+>/g, '').trim();
+      if (!text) continue;
+      if (msg.bot_id || msg.subtype === 'bot_message') {
+        history.push({ role: 'assistant', content: text });
+      } else if (msg.user) {
+        history.push({ role: 'user', content: text });
+      }
+    }
+    console.log(`[slack] Rebuilt ${history.length} messages from thread ${threadTs}`);
+    return history;
+  } catch (err) {
+    console.error('[slack] fetchThreadHistory error:', err.message);
+    return [];
+  }
 }
 
 // ── Route: POST /slack/events ─────────────────────────────────────────────────
@@ -94,10 +119,20 @@ router.post('/events', async (req, res) => {
 
   console.log(`[slack] "${text}" from ${event.user} in ${event.channel}`);
 
-  const threadTs = event.thread_ts || event.ts;
+  const threadTs  = event.thread_ts || event.ts;
+  const isReply   = !!event.thread_ts && event.thread_ts !== event.ts;
+
+  // If this is a reply in an existing thread, check if we need to reload history from Slack
+  let prefetchedHistory = null;
+  if (isReply) {
+    const { hasFreshHistory } = require('../services/slack-bot');
+    if (!hasFreshHistory(threadTs)) {
+      prefetchedHistory = await fetchThreadHistory(event.channel, threadTs, event.ts);
+    }
+  }
 
   try {
-    const reply = await processSlackMessage(text, threadTs);
+    const reply = await processSlackMessage(text, threadTs, prefetchedHistory);
     await postMessage(event.channel, reply, threadTs);
   } catch (err) {
     console.error('[slack] Error processing message:', err.message);

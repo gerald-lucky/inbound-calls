@@ -129,6 +129,12 @@ function getHistory(threadTs) {
   return entry.history;
 }
 
+function hasFreshHistory(threadTs) {
+  if (!threadTs) return false;
+  const entry = _threads.get(threadTs);
+  return !!entry && Date.now() - entry.lastActive <= THREAD_TTL;
+}
+
 function saveHistory(threadTs, history) {
   if (!threadTs) return;
   const trimmed = history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
@@ -141,8 +147,9 @@ function saveHistory(threadTs, history) {
  * @param {string} threadTs  - Slack thread_ts used as conversation key.
  * @returns {Promise<string>}
  */
-async function processSlackMessage(userText, threadTs) {
-  const messages = [...getHistory(threadTs), { role: 'user', content: userText }];
+async function processSlackMessage(userText, threadTs, prefetchedHistory = null) {
+  const history  = prefetchedHistory ?? getHistory(threadTs);
+  const messages = [...history, { role: 'user', content: userText }];
 
   for (let turn = 0; turn < 5; turn++) {
     const response = await anthropic.messages.create({
@@ -179,4 +186,4 @@ async function processSlackMessage(userText, threadTs) {
   return 'I hit the maximum number of lookup steps. Please try a more specific query.';
 }
 
-module.exports = { processSlackMessage };
+module.exports = { processSlackMessage, hasFreshHistory };
