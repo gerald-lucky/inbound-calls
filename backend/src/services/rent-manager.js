@@ -29,10 +29,10 @@ async function getToken() {
   }
 
   const json    = await res.json();
-  console.log('[rm] Auth response keys:', Object.keys(json).join(', '));
-  _token        = json.Token;           // RM returns Token (capital T)
+  // RM returns the token as a plain JSON string, not an object
+  _token        = typeof json === 'string' ? json : (json.Token ?? json.token ?? json.access_token ?? '');
   _tokenExpires = Date.now() + 3600_000; // tokens last ~1 hour; refresh 1 min early
-  console.log(`[rm] Token refreshed (BASE=${BASE}, LOC=${LOC_ID}, token prefix=${(_token||'').slice(0,16)}`);
+  console.log(`[rm] Token refreshed (LOC=${LOC_ID}, token prefix=${_token.slice(0,16)}`);
   return _token;
 }
 
