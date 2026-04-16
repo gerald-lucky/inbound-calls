@@ -179,7 +179,46 @@ async function getPaymentHistory(tenantId, limit = 8) {
   }
 }
 
-// ── CashPay / Zego ────────────────────────────────────────────────────────────
+// ── Vacancy report ────────────────────────────────────────────────────────────
+
+async function getVacancyReport() {
+  // Fetch all units from RM
+  const pagesize = 500;
+  let allUnits = [];
+  let page = 1;
+  while (true) {
+    const data  = await rmGet(`/Units?pagesize=${pagesize}&pagenumber=${page}`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    allUnits = allUnits.concat(items);
+    if (items.length < pagesize) break;
+    page++;
+    if (page > 20) break;
+  }
+
+  if (!allUnits.length) return 'No unit data available from Rent Manager.';
+
+  // Count by vacancy status — RM uses various field names
+  const vacant   = allUnits.filter(u => {
+    const status = (u.VacancyStatus || u.Status || u.UnitStatus || '').toLowerCase();
+    return status.includes('vacant') || status === 'v' || u.IsVacant === true;
+  });
+  const occupied = allUnits.filter(u => {
+    const status = (u.VacancyStatus || u.Status || u.UnitStatus || '').toLowerCase();
+    return status.includes('occupied') || status === 'o' || u.IsVacant === false;
+  });
+  const other    = allUnits.length - vacant.length - occupied.length;
+
+  const vacantList = vacant.slice(0, 20).map(u => u.UnitNumber || u.Name || u.UnitID).join(', ');
+
+  return `VACANCY REPORT (Rent Manager):
+Total Units: ${allUnits.length}
+Occupied: ${occupied.length}
+Vacant: ${vacant.length}${other > 0 ? `\nOther/Unknown Status: ${other}` : ''}
+Vacancy Rate: ${allUnits.length ? ((vacant.length / allUnits.length) * 100).toFixed(1) : 0}%
+${vacant.length ? `\nVacant Units: ${vacantList}${vacant.length > 20 ? ` ... and ${vacant.length - 20} more` : ''}` : ''}`;
+}
+
+
 
 async function generateCashPayCode(tenantId) {
   // Zego CashPay barcode via Rent Manager API
@@ -251,6 +290,7 @@ module.exports = {
   lookupTenantByUnit,
   getPaymentHistory,
   generateCashPayCode,
+  getVacancyReport,
   buildAccountSummary,
   buildCallerContext,
 };

@@ -15,6 +15,7 @@ You have live access to Rent Manager and can:
 - Pull payment history for disputes or clarifications
 - Generate CashPay codes (Zego) so a tenant can pay cash at Walmart
 - Provide a tenant's TWA account number and URL for portal/auto-pay setup
+- Get vacancy and occupancy stats for the property
 
 Since this is a text chat you may use formatting, bullet points, and numbers for clarity.
 Keep responses concise and factual — you are a tool for teammates, not a conversationalist.
@@ -57,6 +58,14 @@ const TOOLS = [
       required: ['tenant_id'],
     },
   },
+  {
+    name: 'get_vacancy_report',
+    description: 'Get vacancy and occupancy stats for the property — total units, occupied, vacant counts, and list of vacant unit numbers.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 ];
 
 async function executeTool(name, input) {
@@ -90,6 +99,14 @@ async function executeTool(name, input) {
       return `CashPay code: *${code}*${expires}\nTenant can use this at Walmart, CVS, or any PayNearMe/Zego location.`;
     } catch (err) {
       return `Could not generate CashPay code: ${err.message}`;
+    }
+  }
+
+  if (name === 'get_vacancy_report') {
+    try {
+      return await rm.getVacancyReport();
+    } catch (err) {
+      return `Could not fetch vacancy report: ${err.message}`;
     }
   }
 
