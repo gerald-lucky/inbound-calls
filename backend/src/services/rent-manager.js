@@ -93,7 +93,7 @@ async function getAllTenants() {
   let page = 1;
 
   while (true) {
-    const data  = await rmGet(`/tenants?embeds=Units&pagesize=${pagesize}&pagenumber=${page}`);
+    const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     all = all.concat(items);
     console.log(`[rm] Tenants page ${page}: ${items.length} items`);
@@ -179,10 +179,30 @@ async function getPaymentHistory(tenantId, limit = 8) {
   }
 }
 
+// ── Properties cache ──────────────────────────────────────────────────────────
+
+let _propCache     = null;
+let _propCacheTime = 0;
+
+async function getPropertyMap() {
+  if (_propCache && Date.now() - _propCacheTime < TENANT_CACHE_TTL) return _propCache;
+  try {
+    const data  = await rmGet('/Properties?pagesize=200');
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    _propCache     = new Map(items.map(p => [p.PropertyID, p.Name || p.PropertyName || '']));
+    _propCacheTime = Date.now();
+    console.log(`[rm] Properties loaded — ${_propCache.size} properties`);
+  } catch (err) {
+    console.error('[rm] getPropertyMap:', err.message);
+    _propCache = new Map();
+  }
+  return _propCache;
+}
+
 // ── Vacancy report ────────────────────────────────────────────────────────────
 
 async function getVacancyReport(communityName) {
-  // Fetch all units
+  // Fetch all units + property map in parallel
   const pagesize = 500;
   let allUnits   = [];
   let page       = 1;
@@ -194,34 +214,40 @@ async function getVacancyReport(communityName) {
     if (++page > 20) break;
   }
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
-  if (allUnits[0]) console.log('[rm] Sample unit keys:', Object.keys(allUnits[0]).join(', '));
 
-  // Build set of occupied unit numbers from tenant cache
-  const tenants          = await getAllTenants();
-  const occupiedUnitNums = new Set(
-    tenants.flatMap(t => (t.Units || []).map(u => (u.UnitNumber || '').toLowerCase().trim()))
+  const [tenants, propMap] = await Promise.all([getAllTenants(), getPropertyMap()]);
+
+  // Build set of occupied unit IDs from tenant UnitID fields
+  const occupiedUnitIDs = new Set(
+    tenants.flatMap(t => {
+      const ids = [];
+      if (t.UnitID)  ids.push(t.UnitID);
+      if (t.Units)   t.Units.forEach(u => u.UnitID && ids.push(u.UnitID));
+      return ids;
+    })
   );
 
-  // Filter by community/property if requested
+  // Filter by community/property name if requested
   let units = allUnits;
   if (communityName) {
     const q = communityName.toLowerCase();
-    units = allUnits.filter(u =>
-      (u.Property?.Name || u.PropertyName || u.CommunityName || u.Community || '').toLowerCase().includes(q)
-    );
+    units = allUnits.filter(u => {
+      const propName = propMap.get(u.PropertyID) || '';
+      return propName.toLowerCase().includes(q);
+    });
     if (!units.length) {
-      const communities = [...new Set(allUnits.map(u =>
-        u.Property?.Name || u.PropertyName || u.CommunityName || u.Community
-      ).filter(Boolean))];
-      return `No units found matching "${communityName}". Known communities: ${communities.join(', ') || 'none found'}.`;
+      const names = [...new Set([...propMap.values()].filter(Boolean))].join(', ');
+      return `No units found matching "${communityName}". Known communities: ${names || 'none found'}.`;
     }
   }
 
-  const vacant   = units.filter(u => !occupiedUnitNums.has((u.UnitNumber || '').toLowerCase().trim()));
-  const occupied = units.filter(u =>  occupiedUnitNums.has((u.UnitNumber || '').toLowerCase().trim()));
+  const vacant   = units.filter(u => !occupiedUnitIDs.has(u.UnitID));
+  const occupied = units.filter(u =>  occupiedUnitIDs.has(u.UnitID));
 
-  const vacantList = vacant.slice(0, 30).map(u => u.UnitNumber || u.UnitID).join(', ');
-  const header     = communityName ? `VACANCY REPORT — ${communityName}` : 'VACANCY REPORT (All Communities)';
+  const vacantList = vacant.slice(0, 30).map(u => u.Name || u.UnitID).join(', ');
+  const header     = communityName
+    ? `VACANCY REPORT — ${communityName}`
+    : 'VACANCY REPORT (All Communities)';
 
   return `${header}:
 Total Units: ${units.length}
