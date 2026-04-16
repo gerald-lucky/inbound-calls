@@ -87,9 +87,22 @@ const TENANT_CACHE_TTL = 5 * 60 * 1000;
 
 async function getAllTenants() {
   if (_tenantCache && Date.now() - _tenantCacheTime < TENANT_CACHE_TTL) return _tenantCache;
-  const data = await rmGet('/tenants?pagesize=500');
-  console.log('[rm] Tenant response keys:', data ? Object.keys(data).join(', ') : 'null');
-  _tenantCache     = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+
+  const pagesize = 500;
+  let all = [];
+  let page = 1;
+
+  while (true) {
+    const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    all = all.concat(items);
+    const total = data?.TotalCount ?? data?.totalCount ?? items.length;
+    console.log(`[rm] Tenants page ${page}: ${items.length} items (total reported: ${total})`);
+    if (items.length < pagesize || all.length >= total) break;
+    page++;
+  }
+
+  _tenantCache     = all;
   _tenantCacheTime = Date.now();
   console.log(`[rm] Tenant cache loaded — ${_tenantCache.length} tenants`);
   return _tenantCache;
@@ -159,11 +172,11 @@ async function lookupTenantByUnit(unitNumber) {
 async function getPaymentHistory(tenantId, limit = 8) {
   try {
     const data = await rmGet(
-      `/transactions?` +
+      `/Transactions?` +
       `filters[]=TenantID,eq,${tenantId}&` +
       `orderby=TransactionDate desc&pagesize=${limit}`
     );
-    return data?.items ?? [];
+    return data?.Items ?? data?.items ?? [];
   } catch (err) {
     console.error('[rm] getPaymentHistory:', err.message);
     return [];
