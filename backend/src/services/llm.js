@@ -2,7 +2,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { EventEmitter } = require('events');
-const parkData = require('./park-data');
+const rm = require('./rent-manager');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
@@ -10,63 +10,97 @@ const MODEL = 'claude-sonnet-4-6';
 // Sentence-boundary pattern — flush to TTS at natural speech breaks
 const SENTENCE_END = /[.!?]\s+|[.!?]$/;
 
-// ── Tools Claude can call to query the database ───────────────────────────────
+// ── Tools Claude can call against Rent Manager ────────────────────────────────
 
 const TOOLS = [
   {
-    name: 'lookup_resident_account',
+    name: 'lookup_resident',
     description:
-      'Look up a resident\'s account, balance, and payment history by name or lot number. ' +
-      'Use this whenever the caller provides their name or lot number and you need their account details.',
+      'Look up a resident in Rent Manager by name or unit/lot number. ' +
+      'Returns account details, balance, recent transactions, and TWA account number. ' +
+      'Use whenever the caller provides their name or unit number.',
     input_schema: {
       type: 'object',
       properties: {
-        first_name: {
-          type: 'string',
-          description: "Resident's first name (optional if lot_number is provided)",
-        },
-        last_name: {
-          type: 'string',
-          description: "Resident's last name (optional if lot_number is provided)",
-        },
-        lot_number: {
-          type: 'string',
-          description: "Resident's lot number (optional if name is provided)",
-        },
+        first_name:  { type: 'string', description: "Resident's first name" },
+        last_name:   { type: 'string', description: "Resident's last name" },
+        unit_number: { type: 'string', description: "Resident's unit or lot number" },
       },
+    },
+  },
+  {
+    name: 'get_payment_history',
+    description:
+      'Fetch detailed payment/transaction history for a resident from Rent Manager. ' +
+      'Use for payment disputes, clarifications, or when the caller asks about past payments. ' +
+      'Requires the TenantID from a prior lookup.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tenant_id: { type: 'number', description: "Resident's Rent Manager TenantID" },
+      },
+      required: ['tenant_id'],
+    },
+  },
+  {
+    name: 'generate_cashpay_code',
+    description:
+      'Generate a CashPay barcode/code so the resident can pay their rent in cash at Walmart, CVS, or other retail locations through the Zego network. ' +
+      'Requires the TenantID from a prior lookup.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tenant_id: { type: 'number', description: "Resident's Rent Manager TenantID" },
+      },
+      required: ['tenant_id'],
     },
   },
 ];
 
 /**
- * Execute a tool call requested by Claude.
- * @param {string} toolName
- * @param {object} toolInput
- * @returns {Promise<string>} Result string to send back to Claude.
+ * Execute a tool call requested by Claude and return a result string.
  */
 async function executeToolCall(toolName, toolInput) {
-  if (toolName !== 'lookup_resident_account') {
-    return 'Unknown tool.';
+  console.log(`[llm] tool: ${toolName}`, JSON.stringify(toolInput));
+
+  if (toolName === 'lookup_resident') {
+    const { first_name, last_name, unit_number } = toolInput;
+    let tenant = null;
+
+    if (unit_number) tenant = await rm.lookupTenantByUnit(unit_number);
+    if (!tenant && (first_name || last_name)) tenant = await rm.lookupTenantByName(first_name, last_name);
+
+    if (!tenant) {
+      return 'No resident found with that name or unit number. Ask the caller to spell their name letter by letter, then try again with the corrected spelling.';
+    }
+
+    const payments = await rm.getPaymentHistory(tenant.TenantID, 6);
+    return rm.buildAccountSummary(tenant, payments);
   }
 
-  const { first_name, last_name, lot_number } = toolInput;
-  console.log(`[llm] lookup_resident_account — name: "${first_name || ''} ${last_name || ''}".trim(), lot: "${lot_number || ''}"`);
-
-  let tenant = null;
-
-  if (lot_number) {
-    tenant = await parkData.lookupTenantByLot(lot_number);
-  }
-  if (!tenant && (first_name || last_name)) {
-    tenant = await parkData.lookupTenantByName(first_name, last_name);
+  if (toolName === 'get_payment_history') {
+    const payments = await rm.getPaymentHistory(toolInput.tenant_id, 12);
+    if (!payments.length) return 'No transaction history found for this resident.';
+    return payments.map((t) =>
+      `${new Date(t.TransactionDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}: ` +
+      `${t.Description || t.TransactionType || 'Transaction'} — $${Math.abs(Number(t.Amount || 0)).toFixed(2)}`
+    ).join('\n');
   }
 
-  if (!tenant) {
-    return 'No resident found with that name or lot number. Ask the caller to spell their name letter by letter so you can try again with the correct spelling.';
+  if (toolName === 'generate_cashpay_code') {
+    try {
+      const result = await rm.generateCashPayCode(toolInput.tenant_id);
+      if (!result) return 'CashPay code generated but no details returned. Please check Rent Manager or have the tenant log into TWA.';
+      const code    = result.BarcodeNumber || result.Code || result.barcode || JSON.stringify(result);
+      const expires = result.ExpirationDate ? ` (expires ${result.ExpirationDate})` : '';
+      return `CashPay code generated: ${code}${expires}. The resident can take this code to Walmart, CVS, or any PayNearMe/Zego location to pay in cash. No account or card needed.`;
+    } catch (err) {
+      console.error('[llm] generateCashPayCode error:', err.message);
+      return `Could not generate CashPay code: ${err.message}. The tenant can also generate one by logging into the Tenant Web Access portal.`;
+    }
   }
 
-  console.log(`[llm] Found resident: ${tenant.first_name} ${tenant.last_name} (lot ${tenant.lot_number})`);
-  return parkData.buildAccountContext(tenant);
+  return 'Unknown tool.';
 }
 
 // ── LLMService ────────────────────────────────────────────────────────────────
@@ -109,10 +143,13 @@ class LLMService extends EventEmitter {
       this._callerContext ? `\n\n${this._callerContext}` : '',
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
       '\nYou are multilingual. You speak English, Spanish, Hindi, Punjabi, Gujarati, Bengali, Tamil, Telugu, Urdu, and Marathi fluently. If the caller speaks any of these languages, asks if you speak their language, or asks you to switch languages, immediately switch and continue the entire conversation in that language. Confirm warmly in that language (e.g. in Hindi: "हाँ, मैं हिंदी में बात कर सकती हूँ।"). Stay in that language for the rest of the call once switched.' +
-      '\nWhenever you are about to call the lookup_resident_account tool, first say a brief hold phrase in whatever language you are speaking — then call the tool.' +
+      '\nWhenever you are about to call any tool, first say a brief hold phrase in whatever language you are speaking — then call the tool.' +
       '\nWhen a caller spells out their name letter by letter (e.g. "J-O-S-E" or "M, A, R, I, A"), reconstruct the full name from those letters and pass it to the lookup tool — do not pass the individual letters.' +
       '\nIf a caller gives their name and the lookup fails, ask them to spell it letter by letter. After they spell it, attempt the lookup again with the reconstructed spelling.' +
-      '\nIf a name still cannot be found after spelling confirmation, ask for their lot number as an alternative way to pull up the account.',
+      '\nIf a name still cannot be found after spelling confirmation, ask for their unit or lot number as an alternative.' +
+      '\nFor payment history questions or disputes, use the get_payment_history tool with the tenant_id from the lookup.' +
+      '\nFor cash payments at Walmart or retail stores, use generate_cashpay_code to create a Zego CashPay code — read the code clearly to the caller.' +
+      '\nFor auto-pay setup or online account access, provide the resident\'s Tenant ID and the TWA URL from their account record — they register at that URL using their Tenant ID as their account number.',
     ].join('');
 
     let fullTextResponse = '';
