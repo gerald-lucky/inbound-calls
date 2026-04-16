@@ -74,7 +74,7 @@ async function rmPost(path, body = {}, retry = true) {
 
 // ── Tenant lookup ─────────────────────────────────────────────────────────────
 
-const TENANT_EMBEDS = 'embeds[]=PhoneNumbers&embeds[]=Units&embeds[]=CurrentCharges';
+const TENANT_EMBEDS = 'embeds[]=PhoneNumbers&embeds[]=Units';
 
 async function lookupTenantByPhone(phoneNumber) {
   const digits = (phoneNumber || '').replace(/\D/g, '');
@@ -174,7 +174,7 @@ function fmtAmount(val) {
 
 function buildAccountSummary(tenant, payments = []) {
   const unit    = tenant.Units?.[0]?.UnitNumber ?? '—';
-  const balance = tenant.CurrentCharges?.BalanceDue ?? tenant.CurrentBalance ?? 0;
+  const balance = tenant.Balance ?? tenant.CurrentBalance ?? tenant.BalanceDue ?? 0;
   const name    = `${tenant.FirstName} ${tenant.LastName}`;
   const twaUrl  = `https://${COMPANY_CODE}.tenantwebaccess.com`;
 
