@@ -29,9 +29,10 @@ async function getToken() {
   }
 
   const json    = await res.json();
+  console.log('[rm] Auth response keys:', Object.keys(json).join(', '));
   _token        = json.Token;           // RM returns Token (capital T)
   _tokenExpires = Date.now() + 3600_000; // tokens last ~1 hour; refresh 1 min early
-  console.log(`[rm] Token refreshed (BASE=${BASE}, LOC=${LOC_ID})`);
+  console.log(`[rm] Token refreshed (BASE=${BASE}, LOC=${LOC_ID}, token prefix=${(_token||'').slice(0,16)}`);
   return _token;
 }
 
