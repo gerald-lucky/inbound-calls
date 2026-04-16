@@ -207,7 +207,7 @@ async function getVacancyReport(communityName) {
   let allUnits   = [];
   let page       = 1;
   while (true) {
-    const data  = await rmGet(`/Units?pagesize=${pagesize}&pagenumber=${page}`);
+    const data  = await rmGet(`/Units?embeds=CurrentTenant&pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     allUnits    = allUnits.concat(items);
     if (items.length < pagesize) break;
@@ -215,17 +215,24 @@ async function getVacancyReport(communityName) {
   }
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
 
-  const [tenants, propMap] = await Promise.all([getAllTenants(), getPropertyMap()]);
+  // Log first unit structure to understand CurrentTenant shape
+  if (allUnits[0]) {
+    const u0 = allUnits[0];
+    console.log('[rm] Unit sample keys:', Object.keys(u0).join(', '));
+    const ct = u0.CurrentTenant ?? u0.CurrentTenants ?? u0.Tenants;
+    console.log('[rm] CurrentTenant sample:', JSON.stringify(ct)?.slice(0, 120));
+  }
 
-  // Build set of occupied unit IDs from tenant UnitID fields
-  const occupiedUnitIDs = new Set(
-    tenants.flatMap(t => {
-      const ids = [];
-      if (t.UnitID)  ids.push(t.UnitID);
-      if (t.Units)   t.Units.forEach(u => u.UnitID && ids.push(u.UnitID));
-      return ids;
-    })
-  );
+  const propMap = await getPropertyMap();
+
+  // A unit is occupied if CurrentTenant is a non-empty object/array
+  function isOccupied(u) {
+    const ct = u.CurrentTenant ?? u.CurrentTenants ?? u.Tenants;
+    if (!ct) return false;
+    if (Array.isArray(ct)) return ct.length > 0;
+    if (typeof ct === 'object') return Object.keys(ct).length > 0;
+    return !!ct;
+  }
 
   // Filter by community/property name if requested
   let units = allUnits;
@@ -241,8 +248,8 @@ async function getVacancyReport(communityName) {
     }
   }
 
-  const vacant   = units.filter(u => !occupiedUnitIDs.has(u.UnitID));
-  const occupied = units.filter(u =>  occupiedUnitIDs.has(u.UnitID));
+  const occupied = units.filter(isOccupied);
+  const vacant   = units.filter(u => !isOccupied(u));
 
   const vacantList = vacant.slice(0, 30).map(u => u.Name || u.UnitID).join(', ');
   const header     = communityName
