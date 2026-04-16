@@ -93,7 +93,7 @@ async function getAllTenants() {
   let page = 1;
 
   while (true) {
-    const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
+    const data  = await rmGet(`/tenants?embeds=Units&pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     all = all.concat(items);
     console.log(`[rm] Tenants page ${page}: ${items.length} items`);
@@ -182,36 +182,45 @@ async function getPaymentHistory(tenantId, limit = 8) {
 // ── Vacancy report ────────────────────────────────────────────────────────────
 
 async function getVacancyReport(communityName) {
+  // Fetch all units
   const pagesize = 500;
   let allUnits   = [];
   let page       = 1;
-
   while (true) {
-    // embeds=CurrentTenant: units without a CurrentTenant are vacant
-    const data  = await rmGet(`/Units?embeds=CurrentTenant&pagesize=${pagesize}&pagenumber=${page}`);
+    const data  = await rmGet(`/Units?pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     allUnits    = allUnits.concat(items);
     if (items.length < pagesize) break;
-    page++;
-    if (page > 20) break;
+    if (++page > 20) break;
   }
-
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
+  if (allUnits[0]) console.log('[rm] Sample unit keys:', Object.keys(allUnits[0]).join(', '));
 
-  // Filter by community/property name if provided
+  // Build set of occupied unit numbers from tenant cache
+  const tenants          = await getAllTenants();
+  const occupiedUnitNums = new Set(
+    tenants.flatMap(t => (t.Units || []).map(u => (u.UnitNumber || '').toLowerCase().trim()))
+  );
+
+  // Filter by community/property if requested
   let units = allUnits;
   if (communityName) {
     const q = communityName.toLowerCase();
     units = allUnits.filter(u =>
-      (u.Property?.Name || u.PropertyName || u.CommunityName || '').toLowerCase().includes(q)
+      (u.Property?.Name || u.PropertyName || u.CommunityName || u.Community || '').toLowerCase().includes(q)
     );
-    if (!units.length) return `No units found for community "${communityName}". Try without a filter to see all.`;
+    if (!units.length) {
+      const communities = [...new Set(allUnits.map(u =>
+        u.Property?.Name || u.PropertyName || u.CommunityName || u.Community
+      ).filter(Boolean))];
+      return `No units found matching "${communityName}". Known communities: ${communities.join(', ') || 'none found'}.`;
+    }
   }
 
-  const vacant   = units.filter(u => !u.CurrentTenant && !(u.CurrentTenants?.length));
-  const occupied = units.filter(u =>  u.CurrentTenant ||  (u.CurrentTenants?.length > 0));
+  const vacant   = units.filter(u => !occupiedUnitNums.has((u.UnitNumber || '').toLowerCase().trim()));
+  const occupied = units.filter(u =>  occupiedUnitNums.has((u.UnitNumber || '').toLowerCase().trim()));
 
-  const vacantList = vacant.slice(0, 30).map(u => u.UnitNumber || u.Name || u.UnitID).join(', ');
+  const vacantList = vacant.slice(0, 30).map(u => u.UnitNumber || u.UnitID).join(', ');
   const header     = communityName ? `VACANCY REPORT — ${communityName}` : 'VACANCY REPORT (All Communities)';
 
   return `${header}:
