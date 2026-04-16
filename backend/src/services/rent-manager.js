@@ -31,7 +31,7 @@ async function getToken() {
   const json    = await res.json();
   _token        = json.Token;           // RM returns Token (capital T)
   _tokenExpires = Date.now() + 3600_000; // tokens last ~1 hour; refresh 1 min early
-  console.log('[rm] Token refreshed');
+  console.log(`[rm] Token refreshed (BASE=${BASE}, LOC=${LOC_ID})`);
   return _token;
 }
 
@@ -39,8 +39,14 @@ async function getToken() {
 
 async function rmGet(path, retry = true) {
   const token = await getToken();
-  const res   = await fetch(`${BASE}${path}`, {
-    headers: { 'X-RM12Api-ApiToken': token, Accept: 'application/json' },
+  const url   = `${BASE}${path}`;
+  console.log(`[rm] GET ${url}`);
+  const res   = await fetch(url, {
+    headers: {
+      'X-RM12Api-ApiToken':    token,
+      'X-RM12Api-LocationId':  String(LOC_ID),
+      Accept: 'application/json',
+    },
   });
   if (res.status === 401 && retry) {
     _token = null; // force re-auth
@@ -80,7 +86,7 @@ const TENANT_CACHE_TTL = 5 * 60 * 1000;
 
 async function getAllTenants() {
   if (_tenantCache && Date.now() - _tenantCacheTime < TENANT_CACHE_TTL) return _tenantCache;
-  const data = await rmGet('/tenants?embeds=PhoneNumbers&embeds=Units&pagesize=500');
+  const data = await rmGet('/tenants?pagesize=500');
   _tenantCache     = data?.items ?? [];
   _tenantCacheTime = Date.now();
   console.log(`[rm] Tenant cache loaded — ${_tenantCache.length} tenants`);
