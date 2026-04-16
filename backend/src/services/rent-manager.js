@@ -88,7 +88,8 @@ const TENANT_CACHE_TTL = 5 * 60 * 1000;
 async function getAllTenants() {
   if (_tenantCache && Date.now() - _tenantCacheTime < TENANT_CACHE_TTL) return _tenantCache;
   const data = await rmGet('/tenants?pagesize=500');
-  _tenantCache     = data?.items ?? [];
+  console.log('[rm] Tenant response keys:', data ? Object.keys(data).join(', ') : 'null');
+  _tenantCache     = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
   _tenantCacheTime = Date.now();
   console.log(`[rm] Tenant cache loaded — ${_tenantCache.length} tenants`);
   return _tenantCache;
