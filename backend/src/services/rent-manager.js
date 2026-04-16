@@ -80,7 +80,7 @@ async function lookupTenantByPhone(phoneNumber) {
   const digits = (phoneNumber || '').replace(/\D/g, '');
   try {
     const data = await rmGet(
-      `/tenants?${TENANT_EMBEDS}&filters[]=PhoneNumbers.PhoneNumber,contains,${digits}&pagesize=1`
+      `/tenants?${TENANT_EMBEDS}&filterExpression=PhoneNumbers.PhoneNumber,ct,${digits}&pagesize=1`
     );
     const tenant = data?.items?.[0] ?? null;
     if (tenant) console.log(`[rm] Phone match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
@@ -95,15 +95,17 @@ async function lookupTenantByName(firstName, lastName) {
   const fn = (firstName || '').trim();
   const ln = (lastName  || '').trim();
 
-  // Try progressively broader searches
+  // Use filterExpression with proper RM syntax — filters at API level, no pagination needed
   const attempts = [];
-  if (fn && ln) attempts.push(`filters[]=FirstName,startswith,${encodeURIComponent(fn)}&filters[]=LastName,startswith,${encodeURIComponent(ln)}`);
-  if (fn)       attempts.push(`filters[]=FirstName,startswith,${encodeURIComponent(fn)}`);
-  if (ln)       attempts.push(`filters[]=LastName,startswith,${encodeURIComponent(ln)}`);
+  if (fn && ln) attempts.push(`filterExpression=LastName,eq,${encodeURIComponent(ln)};FirstName,eq,${encodeURIComponent(fn)}`);
+  if (fn && ln) attempts.push(`filterExpression=LastName,ct,${encodeURIComponent(ln)};FirstName,ct,${encodeURIComponent(fn)}`);
+  if (ln)       attempts.push(`filterExpression=LastName,eq,${encodeURIComponent(ln)}`);
+  if (fn)       attempts.push(`filterExpression=FirstName,eq,${encodeURIComponent(fn)}`);
+  if (ln)       attempts.push(`filterExpression=LastName,ct,${encodeURIComponent(ln)}`);
 
   for (const filter of attempts) {
     try {
-      const data   = await rmGet(`/tenants?${TENANT_EMBEDS}&${filter}&pagesize=1`);
+      const data   = await rmGet(`/tenants?${TENANT_EMBEDS}&${filter}&pagesize=5`);
       const tenant = data?.items?.[0];
       if (tenant) {
         console.log(`[rm] Name match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
@@ -119,7 +121,7 @@ async function lookupTenantByName(firstName, lastName) {
 async function lookupTenantByUnit(unitNumber) {
   try {
     const data = await rmGet(
-      `/tenants?${TENANT_EMBEDS}&filters[]=Units.UnitNumber,eq,${encodeURIComponent(unitNumber.trim())}&pagesize=1`
+      `/tenants?${TENANT_EMBEDS}&filterExpression=Units.UnitNumber,eq,${encodeURIComponent(unitNumber.trim())}&pagesize=1`
     );
     const tenant = data?.items?.[0] ?? null;
     if (tenant) console.log(`[rm] Unit match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
