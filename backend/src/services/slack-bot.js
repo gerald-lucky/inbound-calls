@@ -34,7 +34,7 @@ const TOOLS = [
       properties: {
         first_name:  { type: 'string', description: "Resident's first name" },
         last_name:   { type: 'string', description: "Resident's last name" },
-        unit_number: { type: 'string', description: "Resident's unit or lot number" },
+        unit_number: { type: 'string', description: "Resident's unit or lot number — pass only the number/ID (e.g. '4', 'P-4'), not the community name" },
       },
     },
   },

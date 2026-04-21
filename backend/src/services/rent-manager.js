@@ -93,7 +93,7 @@ async function getAllTenants() {
   let page = 1;
 
   while (true) {
-    const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
+    const data  = await rmGet(`/tenants?embeds=Units&pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     all = all.concat(items);
     console.log(`[rm] Tenants page ${page}: ${items.length} items`);
@@ -155,11 +155,19 @@ async function lookupTenantByName(firstName, lastName) {
 async function lookupTenantByUnit(unitNumber) {
   const unit = (unitNumber || '').trim().toLowerCase();
   if (!unit) return null;
+  // Extract just digits for fuzzy matching (e.g. "Lot #4" → "4", matches "P-4", "004", "Lot-4")
+  const unitDigits = unit.replace(/\D/g, '');
+
+  function unitMatches(u) {
+    const n = (u.UnitNumber || '').toLowerCase().trim();
+    const d = n.replace(/\D/g, '');
+    return n === unit || n.includes(unit) || unit.includes(n) ||
+           (unitDigits && d && unitDigits === d);
+  }
+
   try {
     const tenants = await getAllTenants();
-    const tenant  = tenants.find(t =>
-      (t.Units || []).some(u => (u.UnitNumber || '').toLowerCase() === unit)
-    ) ?? null;
+    const tenant  = tenants.find(t => (t.Units || []).some(unitMatches)) ?? null;
     if (tenant) console.log(`[rm] Unit match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
   } catch (err) {
