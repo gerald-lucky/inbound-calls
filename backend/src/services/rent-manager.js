@@ -228,19 +228,32 @@ async function getVacancyReport(communityName) {
 
   // Build occupied set from tenants — check every likely field name
   if (tenants[0]) console.log('[rm] Tenant keys for occ check:', Object.keys(tenants[0]).join(', '));
-  const occupiedIDs = new Set(
-    tenants.flatMap(t => {
-      const ids = [];
-      if (t.UnitID)       ids.push(Number(t.UnitID));
-      if (t.CurrentUnitID) ids.push(Number(t.CurrentUnitID));
-      if (t.LotID)        ids.push(Number(t.LotID));
-      (t.Units || t.CurrentUnits || []).forEach(u => u.UnitID && ids.push(Number(u.UnitID)));
-      return ids;
-    })
-  );
-  console.log(`[rm] Occupied unit IDs found: ${occupiedIDs.size}`);
+  const sampleUnit = tenants.find(t => t.Units?.length > 0)?.Units?.[0];
+  if (sampleUnit) console.log('[rm] Embedded unit sample keys:', Object.keys(sampleUnit).join(', '));
 
-  const isOccupied = u => occupiedIDs.has(Number(u.UnitID));
+  const occupiedUnitIDs     = new Set();
+  const occupiedUnitNumbers = new Set();
+
+  for (const t of tenants) {
+    if (t.UnitID)        occupiedUnitIDs.add(Number(t.UnitID));
+    if (t.CurrentUnitID) occupiedUnitIDs.add(Number(t.CurrentUnitID));
+    if (t.LotID)         occupiedUnitIDs.add(Number(t.LotID));
+    for (const u of (t.Units || t.CurrentUnits || [])) {
+      if (u.UnitID) occupiedUnitIDs.add(Number(u.UnitID));
+      if (u.ID)     occupiedUnitIDs.add(Number(u.ID));
+      const n = (u.UnitNumber || '').trim();
+      if (n) occupiedUnitNumbers.add(n.toLowerCase());
+    }
+  }
+  console.log(`[rm] Occupied: ${occupiedUnitIDs.size} IDs, ${occupiedUnitNumbers.size} unit numbers`);
+  if (allUnits[0]) console.log('[rm] /Units record sample keys:', Object.keys(allUnits[0]).join(', '));
+
+  // Match by ID first; fall back to unit number (works even when embedded unit IDs are absent)
+  const isOccupied = u => {
+    if (occupiedUnitIDs.has(Number(u.UnitID))) return true;
+    const name = (u.Name || u.UnitNumber || '').trim().toLowerCase();
+    return !!name && occupiedUnitNumbers.has(name);
+  };
 
   // Filter by community/property name if requested
   let units = allUnits;
