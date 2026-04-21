@@ -294,6 +294,11 @@ function fmtAmount(val) {
   return `$${Math.abs(Number(val || 0)).toFixed(2)}`;
 }
 
+async function listProperties() {
+  const propMap = await getPropertyMap();
+  return [...propMap.values()].filter(Boolean).sort();
+}
+
 // ── Context builders ──────────────────────────────────────────────────────────
 
 function buildAccountSummary(tenant, payments = []) {
@@ -340,6 +345,7 @@ Do not make up any account figures until you find their record.`;
 
 module.exports = {
   lookupTenantByPhone,
+  listProperties,
   lookupTenantByName,
   lookupTenantByUnit,
   getPaymentHistory,

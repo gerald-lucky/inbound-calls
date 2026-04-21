@@ -61,6 +61,11 @@ const TOOLS = [
     },
   },
   {
+    name: 'list_properties',
+    description: 'List all property/community names in Rent Manager. Use this when you need to find the exact name of a community, or when a vacancy query returns no results.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'get_vacancy_report',
     description: 'Get vacancy and occupancy stats — total units, occupied, vacant counts, and vacant unit numbers. Optionally filter by community/property name.',
     input_schema: {
@@ -104,6 +109,13 @@ async function executeTool(name, input) {
     } catch (err) {
       return `Could not generate CashPay code: ${err.message}`;
     }
+  }
+
+  if (name === 'list_properties') {
+    const names = await rm.listProperties();
+    return names.length
+      ? `Properties in Rent Manager:\n${names.map(n => `• ${n}`).join('\n')}`
+      : 'No properties found in Rent Manager.';
   }
 
   if (name === 'get_vacancy_report') {

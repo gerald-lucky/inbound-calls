@@ -56,7 +56,8 @@ async function fetchThreadHistory(channel, threadTs, currentMsgTs) {
       { headers: { Authorization: `Bearer ${slackToken()}` } }
     );
     const data = await res.json();
-    if (!data.ok || !data.messages?.length) return [];
+    if (!data.ok) { console.warn('[slack] fetchThreadHistory failed:', data.error); return []; }
+    if (!data.messages?.length) return [];
 
     const history = [];
     for (const msg of data.messages) {
