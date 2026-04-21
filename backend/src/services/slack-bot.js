@@ -21,7 +21,11 @@ Since this is a text chat you may use formatting, bullet points, and numbers for
 Keep responses concise and factual — you are a tool for teammates, not a conversationalist.
 Never make up account figures; always look them up first.
 
-APPROXIMATE QUERIES: When a tool returns no results due to a name mismatch, automatically retry with a shorter or alternate version (e.g. "Messer Community" → try "Messer"). If a community list is returned, pick the closest match and retry. Never give up after one attempt.`;
+COMMUNITY/PROPERTY NAMES: When a staff member mentions a park or community name:
+1. Try the vacancy or lookup tool directly with the name given.
+2. If no match is found, automatically call list_properties and pick the closest matching name — do NOT ask the user first, just retry with the best match.
+3. Only ask for clarification if two or more properties are equally close matches (e.g. "Pinhook North" vs "Pinhook South"). In that case, list the options and ask which one they mean.
+4. Common shorthand: "Pinhook" → "Pinhook Mobile Home Park", "Messer" → "Messer Community", etc. Always try the short name before giving up.`;
 
 const TOOLS = [
   {

@@ -245,14 +245,36 @@ async function getVacancyReport(communityName) {
   // Filter by community/property name if requested
   let units = allUnits;
   if (communityName) {
-    const q = communityName.toLowerCase();
-    units = allUnits.filter(u => {
-      const propName = propMap.get(u.PropertyID) || '';
-      return propName.toLowerCase().includes(q);
-    });
-    if (!units.length) {
-      const names = [...new Set([...propMap.values()].filter(Boolean))].join(', ');
-      return `No units found matching "${communityName}". Known communities: ${names || 'none found'}.`;
+    const words = communityName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+    const q     = communityName.toLowerCase();
+
+    // 1. Try substring match first
+    let matchedPropIDs = [...propMap.entries()]
+      .filter(([, name]) => name.toLowerCase().includes(q))
+      .map(([id]) => id);
+
+    // 2. Fall back to any-word match
+    if (!matchedPropIDs.length && words.length) {
+      matchedPropIDs = [...propMap.entries()]
+        .filter(([, name]) => words.some(w => name.toLowerCase().includes(w)))
+        .map(([id]) => id);
+    }
+
+    if (!matchedPropIDs.length) {
+      const allNames = [...propMap.values()].filter(Boolean).sort().map(n => `• ${n}`).join('\n');
+      return `No property matching "${communityName}" found.\n\nAvailable communities:\n${allNames || 'none found'}`;
+    }
+
+    // If multiple fuzzy matches, list them so Claude can ask for clarification
+    if (matchedPropIDs.length > 1) {
+      const matched = matchedPropIDs.map(id => propMap.get(id)).filter(Boolean);
+      // Still run report with all matched properties combined
+      units = allUnits.filter(u => matchedPropIDs.includes(u.PropertyID));
+      if (!units.length) {
+        return `Found multiple communities matching "${communityName}": ${matched.join(', ')}. Please specify which one.`;
+      }
+    } else {
+      units = allUnits.filter(u => u.PropertyID === matchedPropIDs[0]);
     }
   }
 
