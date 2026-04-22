@@ -257,39 +257,53 @@ async function getAllUnits() {
   return all;
 }
 
+async function buildOccupancyMap() {
+  // Fetch tenants WITHOUT embeds — much faster, only used to determine occupancy.
+  // We don't need unit details here; we just want every UnitID/Name a tenant holds.
+  const pagesize = 500;
+  const byID     = new Set();
+  const byName   = new Set();
+  let page       = 1;
+
+  while (true) {
+    const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    console.log(`[rm] Occupancy page ${page}: ${items.length} items`);
+    if (page === 1 && items[0]) console.log('[rm] Basic tenant keys:', Object.keys(items[0]).join(', '));
+
+    for (const t of items) {
+      if (t.UnitID)        byID.add(Number(t.UnitID));
+      if (t.CurrentUnitID) byID.add(Number(t.CurrentUnitID));
+      if (t.LotID)         byID.add(Number(t.LotID));
+      const n = (t.UnitNumber || t.LotNumber || '').trim();
+      if (n) byName.add(n.toLowerCase());
+    }
+
+    if (items.length < pagesize) break;
+    if (++page > 20) break;
+  }
+
+  console.log(`[rm] Occupancy map: ${byID.size} unit IDs, ${byName.size} unit names`);
+  return { byID, byName };
+}
+
 async function getVacancyReport(communityName) {
-  const allUnits = await getAllUnits();
+  // Run all three fetches in parallel — units and properties are cached after first call
+  const [allUnits, occupancy, propMap] = await Promise.all([
+    getAllUnits(),
+    buildOccupancyMap(),
+    getPropertyMap(),
+  ]);
+
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
 
-  const [tenants, propMap] = await Promise.all([getAllTenants(), getPropertyMap()]);
+  const { byID, byName } = occupancy;
 
-  // Build occupied set from tenants — check every likely field name
-  if (tenants[0]) console.log('[rm] Tenant keys for occ check:', Object.keys(tenants[0]).join(', '));
-  const sampleUnit = tenants.find(t => t.Units?.length > 0)?.Units?.[0];
-  if (sampleUnit) console.log('[rm] Embedded unit sample keys:', Object.keys(sampleUnit).join(', '));
-
-  const occupiedUnitIDs     = new Set();
-  const occupiedUnitNumbers = new Set();
-
-  for (const t of tenants) {
-    if (t.UnitID)        occupiedUnitIDs.add(Number(t.UnitID));
-    if (t.CurrentUnitID) occupiedUnitIDs.add(Number(t.CurrentUnitID));
-    if (t.LotID)         occupiedUnitIDs.add(Number(t.LotID));
-    for (const u of (t.Units || t.CurrentUnits || [])) {
-      if (u.UnitID) occupiedUnitIDs.add(Number(u.UnitID));
-      if (u.ID)     occupiedUnitIDs.add(Number(u.ID));
-      const n = (u.UnitNumber || '').trim();
-      if (n) occupiedUnitNumbers.add(n.toLowerCase());
-    }
-  }
-  console.log(`[rm] Occupied: ${occupiedUnitIDs.size} IDs, ${occupiedUnitNumbers.size} unit numbers`);
-  if (allUnits[0]) console.log('[rm] /Units record sample keys:', Object.keys(allUnits[0]).join(', '));
-
-  // Match by ID first; fall back to unit number (works even when embedded unit IDs are absent)
+  // Match a unit as occupied by ID first, then by name
   const isOccupied = u => {
-    if (occupiedUnitIDs.has(Number(u.UnitID))) return true;
+    if (byID.has(Number(u.UnitID))) return true;
     const name = (u.Name || u.UnitNumber || '').trim().toLowerCase();
-    return !!name && occupiedUnitNumbers.has(name);
+    return !!name && byName.has(name);
   };
 
   // Filter by community/property name if requested
