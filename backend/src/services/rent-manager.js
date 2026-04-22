@@ -79,7 +79,32 @@ async function rmPost(path, body = {}, retry = true) {
   return res.json();
 }
 
-// ── Tenant list cache (5 min TTL) ─────────────────────────────────────────────
+// ── Tenant embed detection (cached) ──────────────────────────────────────────
+
+let _tenantEmbed = undefined; // undefined = not yet probed; null = no embed works
+
+async function detectTenantEmbed() {
+  if (_tenantEmbed !== undefined) return _tenantEmbed;
+  for (const e of ['PhoneNumbers,Leases', 'PhoneNumbers', 'Leases', '']) {
+    try {
+      const qs   = e ? `embeds=${e}&pagesize=1` : 'pagesize=1';
+      const data = await rmGet(`/tenants?${qs}`);
+      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+      if (Array.isArray(items)) { _tenantEmbed = e || null; console.log(`[rm] Tenant embed: "${e || 'none'}"`); return _tenantEmbed; }
+    } catch { /* try next */ }
+  }
+  _tenantEmbed = null;
+  return null;
+}
+
+// Build a query string with the right embed + caller-supplied params
+async function buildTenantQS(extra = {}) {
+  const embed = await detectTenantEmbed();
+  const params = embed ? { embeds: embed, ...extra } : { ...extra };
+  return new URLSearchParams(params).toString();
+}
+
+// ── Tenant list cache (only used for occupancy map / phone fallback) ──────────
 
 let _tenantCache     = null;
 let _tenantCacheTime = 0;
@@ -89,26 +114,13 @@ async function getAllTenants() {
   if (_tenantCache && Date.now() - _tenantCacheTime < TENANT_CACHE_TTL) return _tenantCache;
 
   const pagesize = 500;
-  let all = [];
+  let all  = [];
   let page = 1;
 
-  // Try embeds in priority order; first success wins for all subsequent pages
-  const embedOptions = ['PhoneNumbers,Leases', 'PhoneNumbers', 'Leases', ''];
-  let chosenEmbed   = null;
-
-  for (const embed of embedOptions) {
-    try {
-      const qs   = embed ? `embeds=${embed}&pagesize=1&pagenumber=1` : `pagesize=1&pagenumber=1`;
-      const data = await rmGet(`/tenants?${qs}`);
-      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-      if (Array.isArray(items)) { chosenEmbed = embed; break; }
-    } catch { /* try next */ }
-  }
-  console.log(`[rm] Tenant embed: "${chosenEmbed ?? 'none'}"`);
-
   while (true) {
-    const qs    = chosenEmbed ? `embeds=${chosenEmbed}&pagesize=${pagesize}&pagenumber=${page}` : `pagesize=${pagesize}&pagenumber=${page}`;
+    const qs    = await buildTenantQS({ pagesize, pagenumber: page });
     const data  = await rmGet(`/tenants?${qs}`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     all = all.concat(items);
     console.log(`[rm] Tenants page ${page}: ${items.length} items`);
@@ -126,15 +138,36 @@ async function getAllTenants() {
 
 // ── Tenant lookup ─────────────────────────────────────────────────────────────
 
+// Pick the best matching tenant from an array (exact before partial)
+function bestNameMatch(items, fn, ln) {
+  const f = fn.toLowerCase(), l = ln.toLowerCase();
+  return items.find(t => t.FirstName?.toLowerCase() === f && t.LastName?.toLowerCase() === l)
+      ?? items.find(t => (!f || t.FirstName?.toLowerCase().includes(f)) && (!l || t.LastName?.toLowerCase().includes(l)))
+      ?? null;
+}
+
 async function lookupTenantByPhone(phoneNumber) {
   const digits = (phoneNumber || '').replace(/\D/g, '');
   if (!digits) return null;
+
+  // Server-side: try RM's phone number filter (may or may not be supported)
+  try {
+    const qs     = await buildTenantQS({ PhoneNumber: digits.slice(-10), pagesize: 10 });
+    const data   = await rmGet(`/tenants?${qs}`);
+    const items  = (data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []));
+    const tenant = items.find(t =>
+      (t.PhoneNumbers || []).some(p => (p.PhoneNumber || '').replace(/\D/g, '').includes(digits))
+    ) ?? (items.length === 1 ? items[0] : null);
+    if (tenant) { console.log(`[rm] Phone match (server): ${tenant.FirstName} ${tenant.LastName}`); return tenant; }
+  } catch { /* filter not supported — fall through to cache */ }
+
+  // Cache fallback: scan all tenants (needed when PhoneNumbers aren't filterable server-side)
   try {
     const tenants = await getAllTenants();
     const tenant  = tenants.find(t =>
       (t.PhoneNumbers || []).some(p => (p.PhoneNumber || '').replace(/\D/g, '').includes(digits))
     ) ?? null;
-    if (tenant) console.log(`[rm] Phone match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
+    if (tenant) console.log(`[rm] Phone match (cache): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
   } catch (err) {
     console.error('[rm] lookupTenantByPhone:', err.message);
@@ -143,23 +176,30 @@ async function lookupTenantByPhone(phoneNumber) {
 }
 
 async function lookupTenantByName(firstName, lastName) {
-  const fn = (firstName || '').trim().toLowerCase();
-  const ln = (lastName  || '').trim().toLowerCase();
+  const fn = (firstName || '').trim();
+  const ln = (lastName  || '').trim();
   if (!fn && !ln) return null;
+
+  // Server-side search: like typing into RM's search box
+  try {
+    const params = { pagesize: 20 };
+    if (ln) params.LastName  = ln;
+    if (fn) params.FirstName = fn;
+    const qs     = await buildTenantQS(params);
+    const data   = await rmGet(`/tenants?${qs}`);
+    const items  = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    if (items.length) {
+      const tenant = bestNameMatch(items, fn, ln) ?? items[0];
+      console.log(`[rm] Name match (server): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
+      return tenant;
+    }
+  } catch { /* filter not supported — fall through to cache */ }
+
+  // Cache fallback for fuzzy / partial matches
   try {
     const tenants = await getAllTenants();
-
-    // Exact match first, then partial
-    const match = (t, exact) => {
-      const tfn = (t.FirstName || '').toLowerCase();
-      const tln = (t.LastName  || '').toLowerCase();
-      if (fn && ln) return exact ? (tfn === fn && tln === ln) : (tfn.includes(fn) && tln.includes(ln));
-      if (ln)       return exact ? tln === ln : tln.includes(ln);
-      return          exact ? tfn === fn : tfn.includes(fn);
-    };
-
-    const tenant = tenants.find(t => match(t, true)) ?? tenants.find(t => match(t, false)) ?? null;
-    if (tenant) console.log(`[rm] Name match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
+    const tenant  = bestNameMatch(tenants, fn, ln);
+    if (tenant) console.log(`[rm] Name match (cache): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
   } catch (err) {
     console.error('[rm] lookupTenantByName:', err.message);
