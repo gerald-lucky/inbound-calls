@@ -211,14 +211,17 @@ async function getPropertyMap() {
 // ── Vacancy report ────────────────────────────────────────────────────────────
 
 // Cache which unit endpoint works for this RM account
-let _unitEndpoint = null;
+let _unitEndpoint  = null;
+let _unitCache     = null;
+let _unitCacheTime = 0;
+const UNIT_CACHE_TTL = 10 * 60 * 1000;
 
 async function detectUnitEndpoint() {
   if (_unitEndpoint) return _unitEndpoint;
   for (const ep of ['/Units', '/Lots', '/units', '/lots']) {
     try {
       const probe = await rmGet(`${ep}?pagesize=1&pagenumber=1`);
-      const items = probe?.Items ?? probe?.items ?? (Array.isArray(probe) ? probe : null);
+      const items = probe?.Items ?? probe?.items ?? probe?.Value ?? probe?.value ?? (Array.isArray(probe) ? probe : null);
       if (Array.isArray(items)) {
         console.log(`[rm] Unit endpoint detected: ${ep}`);
         _unitEndpoint = ep;
@@ -229,20 +232,33 @@ async function detectUnitEndpoint() {
   return null;
 }
 
-async function getVacancyReport(communityName) {
+async function getAllUnits() {
+  if (_unitCache && Date.now() - _unitCacheTime < UNIT_CACHE_TTL) return _unitCache;
+
   const endpoint = await detectUnitEndpoint();
-  if (!endpoint) return 'Could not find a unit/lot endpoint in Rent Manager (tried /Units and /Lots).';
+  if (!endpoint) return [];
 
   const pagesize = 500;
-  let allUnits   = [];
-  let page       = 1;
+  let all  = [];
+  let page = 1;
   while (true) {
     const data  = await rmGet(`${endpoint}?pagesize=${pagesize}&pagenumber=${page}`);
-    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-    allUnits    = allUnits.concat(items);
+    const items = data?.Items ?? data?.items ?? data?.Value ?? data?.value ?? (Array.isArray(data) ? data : []);
+    console.log(`[rm] Units page ${page}: ${items.length} items`);
+    all = all.concat(items);
     if (items.length < pagesize) break;
     if (++page > 20) break;
   }
+
+  if (all[0]) console.log('[rm] Unit record sample keys:', Object.keys(all[0]).join(', '));
+  console.log(`[rm] Units cache loaded — ${all.length} units`);
+  _unitCache     = all;
+  _unitCacheTime = Date.now();
+  return all;
+}
+
+async function getVacancyReport(communityName) {
+  const allUnits = await getAllUnits();
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
 
   const [tenants, propMap] = await Promise.all([getAllTenants(), getPropertyMap()]);
@@ -299,17 +315,20 @@ async function getVacancyReport(communityName) {
       return `No property matching "${communityName}" found.\n\nAvailable communities:\n${allNames || 'none found'}`;
     }
 
+    // Normalize IDs to strings for comparison (RM may return numbers or strings)
+    const matchedSet = new Set(matchedPropIDs.map(String));
+
     // If multiple fuzzy matches, list them so Claude can ask for clarification
     if (matchedPropIDs.length > 1) {
       const matched = matchedPropIDs.map(id => propMap.get(id)).filter(Boolean);
-      // Still run report with all matched properties combined
-      units = allUnits.filter(u => matchedPropIDs.includes(u.PropertyID));
+      units = allUnits.filter(u => matchedSet.has(String(u.PropertyID)));
       if (!units.length) {
         return `Found multiple communities matching "${communityName}": ${matched.join(', ')}. Please specify which one.`;
       }
     } else {
-      units = allUnits.filter(u => u.PropertyID === matchedPropIDs[0]);
+      units = allUnits.filter(u => matchedSet.has(String(u.PropertyID)));
     }
+    console.log(`[rm] Filtered to ${units.length} units for "${communityName}" (propIDs: ${[...matchedSet].join(', ')})`);
   }
 
   const occupied = units.filter(isOccupied);
