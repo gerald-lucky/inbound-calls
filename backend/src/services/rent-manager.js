@@ -121,7 +121,6 @@ async function getAllTenants() {
     const qs    = await buildTenantQS({ pagesize, pagenumber: page });
     const data  = await rmGet(`/tenants?${qs}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     all = all.concat(items);
     console.log(`[rm] Tenants page ${page}: ${items.length} items`);
     if (items.length < pagesize) break;
@@ -207,54 +206,89 @@ async function lookupTenantByName(firstName, lastName) {
   }
 }
 
-async function lookupTenantByUnit(unitNumber) {
+async function lookupTenantByUnit(unitNumber, communityName) {
   const query = (unitNumber || '').trim().toLowerCase();
   if (!query) return null;
   const queryDigits = query.replace(/\D/g, '');
 
+  // Strict matching: exact string or exact digit sequence only.
+  // Avoids "12".includes("2") = true matching unrelated units.
   function nameMatches(name) {
     const n = (name || '').toLowerCase().trim();
+    if (!n) return false;
+    if (n === query) return true;
     const d = n.replace(/\D/g, '');
-    return n === query || n.includes(query) || query.includes(n) ||
-           (queryDigits && d && queryDigits === d);
+    if (queryDigits && d && queryDigits === d) return true;
+    return false;
   }
 
   try {
-    // Find the unit record(s) by name in our cached /Units data
-    const allUnits = await getAllUnits();
-    const matched  = allUnits.filter(u => nameMatches(u.Name || ''));
-    if (!matched.length) {
-      console.log(`[rm] No unit found matching "${unitNumber}"`);
+    // Resolve property IDs from communityName to narrow results
+    let propIDs = [];
+    if (communityName) {
+      const propMap = await getPropertyMap();
+      const q       = communityName.toLowerCase();
+      const words   = q.split(/\s+/).filter(w => w.length > 2);
+      propIDs = [...propMap.entries()]
+        .filter(([, pname]) => pname.toLowerCase().includes(q) ||
+                               words.some(w => pname.toLowerCase().includes(w)))
+        .map(([id]) => String(id));
+      console.log(`[rm] Unit lookup: communityName="${communityName}" → propIDs [${propIDs.join(', ')}]`);
+    }
+
+    // Build set of candidate unit names from the unit cache to confirm the unit exists
+    const allUnits       = await getAllUnits();
+    let candidateUnits   = allUnits.filter(u => nameMatches(u.Name || u.UnitNumber || ''));
+    if (propIDs.length) {
+      const filtered = candidateUnits.filter(u => propIDs.includes(String(u.PropertyID)));
+      if (filtered.length) candidateUnits = filtered;
+    }
+    if (!candidateUnits.length) {
+      console.log(`[rm] No unit found matching "${unitNumber}"${communityName ? ` in "${communityName}"` : ''}`);
       return null;
     }
+    console.log(`[rm] Candidate units: ${candidateUnits.map(u => u.Name).join(', ')}`);
 
-    // For each matched unit, try GET /Units/{id}/Tenants to find current occupant
-    for (const u of matched) {
+    // Derive property IDs from matched units if not already set
+    const candidatePropIDs = propIDs.length
+      ? propIDs
+      : [...new Set(candidateUnits.map(u => String(u.PropertyID)).filter(Boolean))];
+
+    // Strategy 1: server-side tenant filter by unit number param
+    for (const param of ['UnitNumber', 'UnitName', 'LotNumber']) {
       try {
-        const data    = await rmGet(`/Units/${u.UnitID}/Tenants?pagesize=10`);
-        const tenants = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-        const current = tenants.find(t => ACTIVE_STATUSES.has((t.Status || '').toLowerCase()))
-                     ?? tenants[0];
-        if (current) {
-          console.log(`[rm] Unit ${u.Name} → tenant ${current.FirstName} ${current.LastName} (ID ${current.TenantID})`);
-          // Merge unit name into tenant object for downstream use
-          current._unitName = u.Name;
-          return current;
+        const qs    = await buildTenantQS({ [param]: unitNumber.trim(), pagesize: 20 });
+        const data  = await rmGet(`/tenants?${qs}`);
+        const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+        if (items.length) {
+          const scoped = candidatePropIDs.length
+            ? items.filter(t => candidatePropIDs.includes(String(t.PropertyID)))
+            : items;
+          const active = scoped.find(t => ACTIVE_STATUSES.has((t.Status || '').toLowerCase()))
+                      ?? scoped[0];
+          if (active) {
+            console.log(`[rm] Unit match (server ${param}): ${active.FirstName} ${active.LastName} (ID ${active.TenantID})`);
+            return active;
+          }
         }
-      } catch (err) {
-        console.warn(`[rm] /Units/${u.UnitID}/Tenants failed:`, err.message);
-      }
+      } catch { /* param not supported by this RM instance */ }
     }
 
-    // Fallback: check tenant cache for units from embedded leases
-    const tenants = await getAllTenants();
-    const tenant  = tenants.find(t =>
+    // Strategy 2: tenant cache lease data (only valid when Leases embed is available)
+    const tenants    = await getAllTenants();
+    const candidates = candidatePropIDs.length
+      ? tenants.filter(t => candidatePropIDs.includes(String(t.PropertyID)))
+      : tenants;
+
+    const tenant = candidates.find(t =>
       (t.Leases || []).some(l =>
-        nameMatches(l.UnitName || l.UnitNumber || '') ||
-        (l.UnitLeases || []).some(ul => nameMatches(ul.UnitName || ul.UnitNumber || ''))
+        nameMatches(l.UnitName || '') ||
+        nameMatches(l.UnitNumber || '') ||
+        (l.UnitLeases || []).some(ul =>
+          nameMatches(ul.UnitName || '') || nameMatches(ul.UnitNumber || ''))
       )
     ) ?? null;
-    if (tenant) console.log(`[rm] Unit match via lease: ${tenant.FirstName} ${tenant.LastName}`);
+    if (tenant) console.log(`[rm] Unit match via lease: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
   } catch (err) {
     console.error('[rm] lookupTenantByUnit:', err.message);

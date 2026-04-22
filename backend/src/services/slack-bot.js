@@ -31,14 +31,16 @@ const TOOLS = [
   {
     name: 'lookup_resident',
     description:
-      'Look up a resident in Rent Manager by name or unit/lot number. ' +
-      'Returns account details, current balance, recent transactions, and TWA info.',
+      'Look up a resident in Rent Manager by name, unit/lot number, or both. ' +
+      'Returns account details, current balance, recent transactions, and TWA info. ' +
+      'Always pass community_name when the user mentions a park/community (e.g. "Oakview lot 2" → unit_number="2", community_name="Oakview").',
     input_schema: {
       type: 'object',
       properties: {
-        first_name:  { type: 'string', description: "Resident's first name" },
-        last_name:   { type: 'string', description: "Resident's last name" },
-        unit_number: { type: 'string', description: "Resident's unit or lot number — pass only the number/ID (e.g. '4', 'P-4'), not the community name" },
+        first_name:     { type: 'string', description: "Resident's first name" },
+        last_name:      { type: 'string', description: "Resident's last name" },
+        unit_number:    { type: 'string', description: "Resident's unit or lot number (digits/ID only, e.g. '4', 'P-4')" },
+        community_name: { type: 'string', description: "Park or community name to narrow the search (e.g. 'Oakview', 'Pinhook')" },
       },
     },
   },
@@ -85,10 +87,11 @@ async function executeTool(name, input) {
   console.log(`[slack-bot] tool: ${name}`, JSON.stringify(input));
 
   if (name === 'lookup_resident') {
-    const { first_name, last_name, unit_number } = input;
+    const { first_name, last_name, unit_number, community_name } = input;
     let tenant = null;
-    if (unit_number) tenant = await rm.lookupTenantByUnit(unit_number);
-    if (!tenant && (first_name || last_name)) tenant = await rm.lookupTenantByName(first_name, last_name);
+    // Try name first (direct server-side filter, most reliable); unit lookup as fallback
+    if (first_name || last_name) tenant = await rm.lookupTenantByName(first_name, last_name);
+    if (!tenant && unit_number) tenant = await rm.lookupTenantByUnit(unit_number, community_name);
     if (!tenant) return 'No resident found with that name or unit number.';
     const payments = await rm.getPaymentHistory(tenant.TenantID, 6);
     return rm.buildAccountSummary(tenant, payments);
