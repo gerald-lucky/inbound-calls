@@ -130,7 +130,11 @@ async function getAllTenants() {
 
   _tenantCache     = all;
   _tenantCacheTime = Date.now();
-  if (all[0]) console.log('[rm] Tenant sample keys:', Object.keys(all[0]).join(', '));
+  if (all[0]) {
+    console.log('[rm] Tenant sample keys:', Object.keys(all[0]).join(', '));
+    const firstLease = all[0].Leases?.[0];
+    if (firstLease) console.log('[rm] Lease sample keys:', Object.keys(firstLease).join(', '));
+  }
   console.log(`[rm] Tenant cache loaded — ${_tenantCache.length} tenants`);
   return _tenantCache;
 }
@@ -227,12 +231,28 @@ async function lookupTenantByUnit(unitNumber, communityName) {
     let propIDs = [];
     if (communityName) {
       const propMap = await getPropertyMap();
-      const q       = communityName.toLowerCase();
-      const words   = q.split(/\s+/).filter(w => w.length > 2);
+      const q       = communityName.toLowerCase().replace(/[,.']/g, '');
+      // Strip generic words that appear in almost every property name
+      const STOP = new Set(['community', 'communities', 'mobile', 'home', 'park', 'parks',
+                            'property', 'properties', 'llc', 'inc', 'corp', 'ltd', 'mhc',
+                            'the', 'and', 'of', 'at', 'in', 'management', 'realty']);
+      const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, ''))
+                     .filter(w => w.length >= 4 && !STOP.has(w));
       propIDs = [...propMap.entries()]
-        .filter(([, pname]) => pname.toLowerCase().includes(q) ||
-                               words.some(w => pname.toLowerCase().includes(w)))
+        .filter(([, pname]) => {
+          const pn = pname.toLowerCase();
+          // Prefer full-string include first
+          if (pn.includes(q)) return true;
+          // Fall back to meaningful-word match (all words must appear)
+          return words.length > 0 && words.every(w => pn.includes(w));
+        })
         .map(([id]) => String(id));
+      // If word-AND produced 0, try word-OR as a last resort
+      if (!propIDs.length && words.length) {
+        propIDs = [...propMap.entries()]
+          .filter(([, pname]) => words.some(w => pname.toLowerCase().includes(w)))
+          .map(([id]) => String(id));
+      }
       console.log(`[rm] Unit lookup: communityName="${communityName}" → propIDs [${propIDs.join(', ')}]`);
     }
 
@@ -291,19 +311,24 @@ async function lookupTenantByUnit(unitNumber, communityName) {
       } catch { /* param not supported by this RM instance */ }
     }
 
-    // Strategy 2: tenant cache lease data (only valid when Leases embed is available)
+    // Strategy 2: tenant cache — match by UnitID from candidate units (most reliable),
+    // then fall back to UnitName/UnitNumber string matching
+    const candidateUnitIDs = new Set(candidateUnits.map(u => Number(u.UnitID)).filter(Boolean));
+    console.log(`[rm] Candidate UnitIDs: [${[...candidateUnitIDs].join(', ')}]`);
+
     const tenants    = await getAllTenants();
     const candidates = candidatePropIDs.length
       ? tenants.filter(t => candidatePropIDs.includes(String(t.PropertyID)))
       : tenants;
 
     const tenant = candidates.find(t =>
-      (t.Leases || []).some(l =>
-        nameMatches(l.UnitName || '') ||
-        nameMatches(l.UnitNumber || '') ||
-        (l.UnitLeases || []).some(ul =>
-          nameMatches(ul.UnitName || '') || nameMatches(ul.UnitNumber || ''))
-      )
+      (t.Leases || []).some(l => {
+        if (l.UnitID && candidateUnitIDs.has(Number(l.UnitID))) return true;
+        if (nameMatches(l.UnitName || '') || nameMatches(l.UnitNumber || '')) return true;
+        return (l.UnitLeases || []).some(ul =>
+          (ul.UnitID && candidateUnitIDs.has(Number(ul.UnitID))) ||
+          nameMatches(ul.UnitName || '') || nameMatches(ul.UnitNumber || ''));
+      })
     ) ?? null;
     if (tenant) console.log(`[rm] Unit match via lease: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
