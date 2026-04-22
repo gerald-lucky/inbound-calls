@@ -210,13 +210,34 @@ async function getPropertyMap() {
 
 // ── Vacancy report ────────────────────────────────────────────────────────────
 
+// Cache which unit endpoint works for this RM account
+let _unitEndpoint = null;
+
+async function detectUnitEndpoint() {
+  if (_unitEndpoint) return _unitEndpoint;
+  for (const ep of ['/Units', '/Lots', '/units', '/lots']) {
+    try {
+      const probe = await rmGet(`${ep}?pagesize=1&pagenumber=1`);
+      const items = probe?.Items ?? probe?.items ?? (Array.isArray(probe) ? probe : null);
+      if (Array.isArray(items)) {
+        console.log(`[rm] Unit endpoint detected: ${ep}`);
+        _unitEndpoint = ep;
+        return ep;
+      }
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
 async function getVacancyReport(communityName) {
-  // Fetch all units + property map in parallel
+  const endpoint = await detectUnitEndpoint();
+  if (!endpoint) return 'Could not find a unit/lot endpoint in Rent Manager (tried /Units and /Lots).';
+
   const pagesize = 500;
   let allUnits   = [];
   let page       = 1;
   while (true) {
-    const data  = await rmGet(`/Units?pagesize=${pagesize}&pagenumber=${page}`);
+    const data  = await rmGet(`${endpoint}?pagesize=${pagesize}&pagenumber=${page}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     allUnits    = allUnits.concat(items);
     if (items.length < pagesize) break;
