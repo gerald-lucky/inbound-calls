@@ -210,15 +210,15 @@ async function lookupTenantByUnit(unitNumber, communityName) {
   const query = (unitNumber || '').trim().toLowerCase();
   if (!query) return null;
   const queryDigits = query.replace(/\D/g, '');
+  const queryNum    = queryDigits ? Number(queryDigits) : NaN;
 
-  // Strict matching: exact string or exact digit sequence only.
-  // Avoids "12".includes("2") = true matching unrelated units.
+  // Exact string match OR numeric match (handles leading zeros: "02" matches "2")
   function nameMatches(name) {
     const n = (name || '').toLowerCase().trim();
     if (!n) return false;
     if (n === query) return true;
     const d = n.replace(/\D/g, '');
-    if (queryDigits && d && queryDigits === d) return true;
+    if (queryDigits && d && !isNaN(queryNum) && Number(d) === queryNum) return true;
     return false;
   }
 
@@ -236,9 +236,11 @@ async function lookupTenantByUnit(unitNumber, communityName) {
       console.log(`[rm] Unit lookup: communityName="${communityName}" → propIDs [${propIDs.join(', ')}]`);
     }
 
-    // Build set of candidate unit names from the unit cache to confirm the unit exists
-    const allUnits       = await getAllUnits();
-    let candidateUnits   = allUnits.filter(u => nameMatches(u.Name || u.UnitNumber || ''));
+    // Find candidate units in the unit cache
+    const allUnits     = await getAllUnits();
+    let candidateUnits = allUnits.filter(u =>
+      nameMatches(u.Name || '') || nameMatches(u.UnitNumber || '') || nameMatches(u.LotNumber || '')
+    );
     if (propIDs.length) {
       const filtered = candidateUnits.filter(u => propIDs.includes(String(u.PropertyID)));
       if (filtered.length) candidateUnits = filtered;
@@ -247,12 +249,27 @@ async function lookupTenantByUnit(unitNumber, communityName) {
       console.log(`[rm] No unit found matching "${unitNumber}"${communityName ? ` in "${communityName}"` : ''}`);
       return null;
     }
-    console.log(`[rm] Candidate units: ${candidateUnits.map(u => u.Name).join(', ')}`);
+    console.log(`[rm] Candidate units: ${candidateUnits.map(u => `${u.Name}(pid=${u.PropertyID})`).join(', ')}`);
 
-    // Derive property IDs from matched units if not already set
     const candidatePropIDs = propIDs.length
       ? propIDs
       : [...new Set(candidateUnits.map(u => String(u.PropertyID)).filter(Boolean))];
+
+    // Strategy 0: unit record may carry the current tenant ID directly
+    for (const u of candidateUnits) {
+      const tid = u.TenantID ?? u.CurrentTenantID ?? u.OccupantID ?? u.ResidentID;
+      if (tid) {
+        try {
+          const qs   = await buildTenantQS({});
+          const data = await rmGet(`/tenants/${tid}${qs ? '?' + qs : ''}`);
+          if (data?.TenantID) {
+            console.log(`[rm] Unit ${u.Name} → tenant from unit record TenantID: ${data.FirstName} ${data.LastName}`);
+            data._unitName = u.Name;
+            return data;
+          }
+        } catch { /* skip */ }
+      }
+    }
 
     // Strategy 1: server-side tenant filter by unit number param
     for (const param of ['UnitNumber', 'UnitName', 'LotNumber']) {
