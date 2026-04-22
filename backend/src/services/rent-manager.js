@@ -92,8 +92,23 @@ async function getAllTenants() {
   let all = [];
   let page = 1;
 
+  // Try embeds in priority order; first success wins for all subsequent pages
+  const embedOptions = ['PhoneNumbers,Leases', 'PhoneNumbers', 'Leases', ''];
+  let chosenEmbed   = null;
+
+  for (const embed of embedOptions) {
+    try {
+      const qs   = embed ? `embeds=${embed}&pagesize=1&pagenumber=1` : `pagesize=1&pagenumber=1`;
+      const data = await rmGet(`/tenants?${qs}`);
+      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+      if (Array.isArray(items)) { chosenEmbed = embed; break; }
+    } catch { /* try next */ }
+  }
+  console.log(`[rm] Tenant embed: "${chosenEmbed ?? 'none'}"`);
+
   while (true) {
-    const data  = await rmGet(`/tenants?embeds=Units&pagesize=${pagesize}&pagenumber=${page}`);
+    const qs    = chosenEmbed ? `embeds=${chosenEmbed}&pagesize=${pagesize}&pagenumber=${page}` : `pagesize=${pagesize}&pagenumber=${page}`;
+    const data  = await rmGet(`/tenants?${qs}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     all = all.concat(items);
     console.log(`[rm] Tenants page ${page}: ${items.length} items`);
@@ -153,22 +168,53 @@ async function lookupTenantByName(firstName, lastName) {
 }
 
 async function lookupTenantByUnit(unitNumber) {
-  const unit = (unitNumber || '').trim().toLowerCase();
-  if (!unit) return null;
-  // Extract just digits for fuzzy matching (e.g. "Lot #4" → "4", matches "P-4", "004", "Lot-4")
-  const unitDigits = unit.replace(/\D/g, '');
+  const query = (unitNumber || '').trim().toLowerCase();
+  if (!query) return null;
+  const queryDigits = query.replace(/\D/g, '');
 
-  function unitMatches(u) {
-    const n = (u.UnitNumber || '').toLowerCase().trim();
+  function nameMatches(name) {
+    const n = (name || '').toLowerCase().trim();
     const d = n.replace(/\D/g, '');
-    return n === unit || n.includes(unit) || unit.includes(n) ||
-           (unitDigits && d && unitDigits === d);
+    return n === query || n.includes(query) || query.includes(n) ||
+           (queryDigits && d && queryDigits === d);
   }
 
   try {
+    // Find the unit record(s) by name in our cached /Units data
+    const allUnits = await getAllUnits();
+    const matched  = allUnits.filter(u => nameMatches(u.Name || ''));
+    if (!matched.length) {
+      console.log(`[rm] No unit found matching "${unitNumber}"`);
+      return null;
+    }
+
+    // For each matched unit, try GET /Units/{id}/Tenants to find current occupant
+    for (const u of matched) {
+      try {
+        const data    = await rmGet(`/Units/${u.UnitID}/Tenants?pagesize=10`);
+        const tenants = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+        const current = tenants.find(t => ACTIVE_STATUSES.has((t.Status || '').toLowerCase()))
+                     ?? tenants[0];
+        if (current) {
+          console.log(`[rm] Unit ${u.Name} → tenant ${current.FirstName} ${current.LastName} (ID ${current.TenantID})`);
+          // Merge unit name into tenant object for downstream use
+          current._unitName = u.Name;
+          return current;
+        }
+      } catch (err) {
+        console.warn(`[rm] /Units/${u.UnitID}/Tenants failed:`, err.message);
+      }
+    }
+
+    // Fallback: check tenant cache for units from embedded leases
     const tenants = await getAllTenants();
-    const tenant  = tenants.find(t => (t.Units || []).some(unitMatches)) ?? null;
-    if (tenant) console.log(`[rm] Unit match: ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
+    const tenant  = tenants.find(t =>
+      (t.Leases || []).some(l =>
+        nameMatches(l.UnitName || l.UnitNumber || '') ||
+        (l.UnitLeases || []).some(ul => nameMatches(ul.UnitName || ul.UnitNumber || ''))
+      )
+    ) ?? null;
+    if (tenant) console.log(`[rm] Unit match via lease: ${tenant.FirstName} ${tenant.LastName}`);
     return tenant;
   } catch (err) {
     console.error('[rm] lookupTenantByUnit:', err.message);
@@ -257,13 +303,16 @@ async function getAllUnits() {
   return all;
 }
 
+// Tenant status values that mean "actively occupying a unit"
+const ACTIVE_STATUSES = new Set(['current', 'eviction', 'notice', 'active']);
+
 async function buildOccupancyMap() {
-  // Fetch tenants WITHOUT embeds — much faster, only used to determine occupancy.
-  // We don't need unit details here; we just want every UnitID/Name a tenant holds.
-  const pagesize = 500;
-  const byID     = new Set();
-  const byName   = new Set();
-  let page       = 1;
+  const pagesize   = 500;
+  const byID       = new Set();
+  const byName     = new Set();
+  const countByProp = new Map(); // PropertyID string → count of active tenants
+  const statusSeen  = new Set();
+  let page         = 1;
 
   while (true) {
     const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
@@ -272,19 +321,29 @@ async function buildOccupancyMap() {
     if (page === 1 && items[0]) console.log('[rm] Basic tenant keys:', Object.keys(items[0]).join(', '));
 
     for (const t of items) {
+      // Unit-ID-based occupancy (if RM ever exposes these directly)
       if (t.UnitID)        byID.add(Number(t.UnitID));
       if (t.CurrentUnitID) byID.add(Number(t.CurrentUnitID));
       if (t.LotID)         byID.add(Number(t.LotID));
       const n = (t.UnitNumber || t.LotNumber || '').trim();
       if (n) byName.add(n.toLowerCase());
+
+      // Count-based fallback: active tenants per property
+      const status = (t.Status || '').toLowerCase();
+      statusSeen.add(status || 'empty');
+      if (ACTIVE_STATUSES.has(status)) {
+        const pid = String(t.PropertyID);
+        countByProp.set(pid, (countByProp.get(pid) || 0) + 1);
+      }
     }
 
     if (items.length < pagesize) break;
     if (++page > 20) break;
   }
 
-  console.log(`[rm] Occupancy map: ${byID.size} unit IDs, ${byName.size} unit names`);
-  return { byID, byName };
+  console.log(`[rm] Occupancy map: ${byID.size} IDs, ${byName.size} names, ${countByProp.size} props with active tenants`);
+  console.log(`[rm] Tenant statuses seen: ${[...statusSeen].join(', ')}`);
+  return { byID, byName, countByProp };
 }
 
 async function getVacancyReport(communityName) {
@@ -297,7 +356,8 @@ async function getVacancyReport(communityName) {
 
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
 
-  const { byID, byName } = occupancy;
+  const { byID, byName, countByProp } = occupancy;
+  const hasUnitLevelData = byID.size > 0 || byName.size > 0;
 
   // Match a unit as occupied by ID first, then by name
   const isOccupied = u => {
@@ -307,17 +367,16 @@ async function getVacancyReport(communityName) {
   };
 
   // Filter by community/property name if requested
-  let units = allUnits;
+  let units        = allUnits;
+  let matchedSet   = null;
   if (communityName) {
     const words = communityName.toLowerCase().split(/\s+/).filter(w => w.length > 2);
     const q     = communityName.toLowerCase();
 
-    // 1. Try substring match first
     let matchedPropIDs = [...propMap.entries()]
       .filter(([, name]) => name.toLowerCase().includes(q))
       .map(([id]) => id);
 
-    // 2. Fall back to any-word match
     if (!matchedPropIDs.length && words.length) {
       matchedPropIDs = [...propMap.entries()]
         .filter(([, name]) => words.some(w => name.toLowerCase().includes(w)))
@@ -329,10 +388,8 @@ async function getVacancyReport(communityName) {
       return `No property matching "${communityName}" found.\n\nAvailable communities:\n${allNames || 'none found'}`;
     }
 
-    // Normalize IDs to strings for comparison (RM may return numbers or strings)
-    const matchedSet = new Set(matchedPropIDs.map(String));
+    matchedSet = new Set(matchedPropIDs.map(String));
 
-    // If multiple fuzzy matches, list them so Claude can ask for clarification
     if (matchedPropIDs.length > 1) {
       const matched = matchedPropIDs.map(id => propMap.get(id)).filter(Boolean);
       units = allUnits.filter(u => matchedSet.has(String(u.PropertyID)));
@@ -345,20 +402,39 @@ async function getVacancyReport(communityName) {
     console.log(`[rm] Filtered to ${units.length} units for "${communityName}" (propIDs: ${[...matchedSet].join(', ')})`);
   }
 
-  const occupied = units.filter(isOccupied);
-  const vacant   = units.filter(u => !isOccupied(u));
-
-  const vacantList = vacant.slice(0, 30).map(u => u.Name || u.UnitID).join(', ');
-  const header     = communityName
+  const header = communityName
     ? `VACANCY REPORT — ${communityName}`
     : 'VACANCY REPORT (All Communities)';
 
+  let occupiedCount, vacantCount, vacantList, note;
+
+  if (hasUnitLevelData) {
+    // Unit-level match: we know exactly which units are occupied
+    const occupied = units.filter(isOccupied);
+    const vacant   = units.filter(u => !isOccupied(u));
+    occupiedCount  = occupied.length;
+    vacantCount    = vacant.length;
+    vacantList     = vacant.slice(0, 30).map(u => u.Name || u.UnitID).join(', ');
+    note           = '';
+  } else {
+    // Count-based fallback: use active tenant count per property
+    const activeInMatched = matchedSet
+      ? [...matchedSet].reduce((sum, pid) => sum + (countByProp.get(pid) || 0), 0)
+      : [...countByProp.values()].reduce((a, b) => a + b, 0);
+
+    occupiedCount = Math.min(activeInMatched, units.length);
+    vacantCount   = units.length - occupiedCount;
+    vacantList    = '';
+    note          = '\n(Occupancy estimated from active tenant count — specific vacant unit numbers require a Rent Manager unit-assignment sync)';
+  }
+
+  const vacancyRate = units.length ? ((vacantCount / units.length) * 100).toFixed(1) : 0;
+
   return `${header}:
 Total Units: ${units.length}
-Occupied: ${occupied.length}
-Vacant: ${vacant.length}
-Vacancy Rate: ${units.length ? ((vacant.length / units.length) * 100).toFixed(1) : 0}%
-${vacant.length ? `\nVacant Units: ${vacantList}${vacant.length > 30 ? ` ... and ${vacant.length - 30} more` : ''}` : '\nAll units are occupied.'}`;
+Occupied: ${occupiedCount}
+Vacant: ${vacantCount}
+Vacancy Rate: ${vacancyRate}%${note}${vacantList ? `\n\nVacant Units: ${vacantList}${vacantCount > 30 ? ` ... and ${vacantCount - 30} more` : ''}` : ''}`;
 }
 
 
@@ -391,7 +467,12 @@ async function listProperties() {
 // ── Context builders ──────────────────────────────────────────────────────────
 
 function buildAccountSummary(tenant, payments = []) {
-  const unit    = tenant.Units?.[0]?.UnitNumber ?? '—';
+  // Unit number: from embedded Units (if embed works), injected _unitName, or lease
+  const unit = tenant._unitName
+    ?? tenant.Units?.[0]?.UnitNumber
+    ?? tenant.Leases?.[0]?.UnitLeases?.[0]?.UnitName
+    ?? tenant.Leases?.[0]?.UnitName
+    ?? '—';
   const balance = tenant.Balance ?? tenant.CurrentBalance ?? tenant.BalanceDue ?? 0;
   const name    = `${tenant.FirstName} ${tenant.LastName}`;
   const twaUrl  = `https://${COMPANY_CODE}.tenantwebaccess.com`;
