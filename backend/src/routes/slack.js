@@ -48,6 +48,43 @@ async function postMessage(channel, text, threadTs) {
   if (!data.ok) console.error('[slack] postMessage error:', data.error);
 }
 
+// Upload a file buffer to a Slack channel/thread (files v2 API)
+async function uploadFileToSlack(channel, threadTs, buffer, filename, title) {
+  const token = slackToken();
+
+  // Step 1: request an upload URL
+  const urlRes  = await fetch('https://slack.com/api/files.getUploadURLExternal', {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body:    new URLSearchParams({ filename, length: String(buffer.length) }),
+  });
+  const urlData = await urlRes.json();
+  if (!urlData.ok) throw new Error(`Slack getUploadURLExternal: ${urlData.error}`);
+
+  // Step 2: PUT the raw bytes to the upload URL
+  const putRes = await fetch(urlData.upload_url, {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body:    buffer,
+  });
+  if (!putRes.ok) throw new Error(`Slack upload PUT failed: ${putRes.status}`);
+
+  // Step 3: complete upload, share to channel/thread
+  const doneRes  = await fetch('https://slack.com/api/files.completeUploadExternal', {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      files:      [{ id: urlData.file_id, title }],
+      channel_id: channel,
+      thread_ts:  threadTs,
+    }),
+  });
+  const doneData = await doneRes.json();
+  if (!doneData.ok) throw new Error(`Slack completeUploadExternal: ${doneData.error}`);
+  console.log(`[slack] File "${filename}" uploaded to ${channel}`);
+  return doneData;
+}
+
 // Fetch prior thread messages and rebuild as Claude-compatible history
 async function fetchThreadHistory(channel, threadTs, currentMsgTs) {
   try {
@@ -132,9 +169,16 @@ router.post('/events', async (req, res) => {
     }
   }
 
+  const slackContext = {
+    channel:  event.channel,
+    threadTs,
+    uploadFile: (buffer, filename, title) =>
+      uploadFileToSlack(event.channel, threadTs, buffer, filename, title),
+  };
+
   try {
-    const reply = await processSlackMessage(text, threadTs, prefetchedHistory);
-    await postMessage(event.channel, reply, threadTs);
+    const reply = await processSlackMessage(text, threadTs, prefetchedHistory, slackContext);
+    if (reply) await postMessage(event.channel, reply, threadTs);
   } catch (err) {
     console.error('[slack] Error processing message:', err.message);
     await postMessage(

@@ -664,6 +664,63 @@ Do not make up any account figures until you find their record.`;
   return buildAccountSummary(tenant, payments);
 }
 
+// ── Tenant documents ──────────────────────────────────────────────────────────
+
+async function getTenantStatements(tenantId, limit = 5) {
+  try {
+    const data  = await rmGet(`/AccountStatements?filters=AccountID:eq:${tenantId}&pagesize=${limit}`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    console.log(`[rm] AccountStatements for tenant ${tenantId}: ${items.length} records`);
+    if (items[0]) console.log('[rm] Statement sample keys:', Object.keys(items[0]).join(', '));
+    return items;
+  } catch (err) {
+    console.error('[rm] getTenantStatements:', err.message);
+    return [];
+  }
+}
+
+async function getTenantHistoryFiles(tenantId, limit = 10) {
+  try {
+    const data  = await rmGet(
+      `/HistoryNotes?filters=ParentID:eq:${tenantId},EntityType:eq:Tenant&embeds=HistoryAttachments,Attachment&pagesize=${limit}`
+    );
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    const withFiles = items.filter(h =>
+      (h.HistoryAttachments?.length > 0) || h.Attachment || h.FileID
+    );
+    console.log(`[rm] History notes for tenant ${tenantId}: ${items.length} total, ${withFiles.length} with files`);
+    if (withFiles[0]) console.log('[rm] HistoryNote sample keys:', Object.keys(withFiles[0]).join(', '));
+    return withFiles;
+  } catch (err) {
+    console.error('[rm] getTenantHistoryFiles:', err.message);
+    return [];
+  }
+}
+
+async function downloadRmFile(url) {
+  // Try with RM auth headers first (internal URLs), then bare (pre-signed S3 URLs)
+  for (const useAuth of [true, false]) {
+    try {
+      const token   = useAuth ? await getToken() : null;
+      const headers = token
+        ? { 'X-RM12Api-ApiToken': token, 'X-RM12Api-LocationId': String(LOC_ID) }
+        : {};
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buffer      = Buffer.from(await res.arrayBuffer());
+      const contentType = res.headers.get('content-type') || 'application/octet-stream';
+      const disposition = res.headers.get('content-disposition') || '';
+      const fnMatch     = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      const filename    = fnMatch ? fnMatch[1].replace(/['"]/g, '') : 'document.pdf';
+      console.log(`[rm] Downloaded ${buffer.length} bytes (${contentType}) from ${url.slice(0, 60)}`);
+      return { buffer, contentType, filename };
+    } catch (err) {
+      if (!useAuth) throw err;
+      console.log(`[rm] downloadRmFile auth attempt failed (${err.message}), retrying without auth`);
+    }
+  }
+}
+
 module.exports = {
   lookupTenantByPhone,
   listProperties,
@@ -674,4 +731,7 @@ module.exports = {
   getVacancyReport,
   buildAccountSummary,
   buildCallerContext,
+  getTenantStatements,
+  getTenantHistoryFiles,
+  downloadRmFile,
 };

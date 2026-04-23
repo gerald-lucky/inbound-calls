@@ -16,6 +16,7 @@ You have live access to Rent Manager and can:
 - Generate CashPay codes (Zego) so a tenant can pay cash at Walmart
 - Provide a tenant's TWA account number and URL for portal/auto-pay setup
 - Get vacancy and occupancy stats for the property
+- List and send tenant documents (account statements, history file attachments) directly into this Slack thread as PDF files
 
 Since this is a text chat you may use formatting, bullet points, and numbers for clarity.
 Keep responses concise and factual — you are a tool for teammates, not a conversationalist.
@@ -81,9 +82,37 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'list_tenant_documents',
+    description:
+      'List available documents for a tenant — account statements and history file attachments. ' +
+      'Returns a list with doc_url and description for each. Use this before send_tenant_document to find the right file.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tenant_id: { type: 'number', description: "Resident's Rent Manager TenantID" },
+      },
+      required: ['tenant_id'],
+    },
+  },
+  {
+    name: 'send_tenant_document',
+    description:
+      'Download a tenant document from Rent Manager and upload it directly into this Slack thread as a file. ' +
+      'Get the doc_url from list_tenant_documents first.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        doc_url:  { type: 'string', description: 'The document URL returned by list_tenant_documents' },
+        filename: { type: 'string', description: 'Filename to use (e.g. "statement-april-2025.pdf")' },
+        title:    { type: 'string', description: 'Display title for the file in Slack' },
+      },
+      required: ['doc_url', 'filename', 'title'],
+    },
+  },
 ];
 
-async function executeTool(name, input) {
+async function executeTool(name, input, slackContext = null) {
   console.log(`[slack-bot] tool: ${name}`, JSON.stringify(input));
 
   if (name === 'lookup_resident') {
@@ -138,6 +167,56 @@ async function executeTool(name, input) {
     }
   }
 
+  if (name === 'list_tenant_documents') {
+    const tid      = input.tenant_id;
+    const [stmts, histFiles] = await Promise.all([
+      rm.getTenantStatements(tid, 5),
+      rm.getTenantHistoryFiles(tid, 10),
+    ]);
+
+    const lines = [];
+
+    for (const s of stmts) {
+      const url  = s.StatementURL || s.DocumentURL || s.URL || null;
+      const date = s.StatementDate ? new Date(s.StatementDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown date';
+      if (url) lines.push(`STATEMENT | ${date} | ${url}`);
+    }
+
+    for (const h of histFiles) {
+      const attachments = h.HistoryAttachments || [];
+      for (const a of attachments) {
+        const url      = a.URL || a.FileURL || a.DownloadURL || (a.File?.URL) || null;
+        const fname    = a.FileName || a.Name || 'attachment';
+        const noteDate = h.Date ? new Date(h.Date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown date';
+        if (url) lines.push(`HISTORY | ${noteDate} — ${fname} | ${url}`);
+      }
+      // Legacy single-attachment field
+      const legacyUrl = h.Attachment?.URL || h.Attachment?.FileURL || null;
+      if (legacyUrl && !attachments.length) {
+        const noteDate = h.Date ? new Date(h.Date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown date';
+        lines.push(`HISTORY | ${noteDate} — ${h.Attachment?.FileName || 'attachment'} | ${legacyUrl}`);
+      }
+    }
+
+    if (!lines.length) return 'No documents found for this tenant (no statements or history file attachments).';
+
+    return `Available documents (format: TYPE | Date | doc_url):\n${lines.join('\n')}`;
+  }
+
+  if (name === 'send_tenant_document') {
+    if (!slackContext?.uploadFile) return 'Document upload is not available in this context.';
+    try {
+      const { buffer, filename: detectedName } = await rm.downloadRmFile(input.doc_url);
+      const filename = input.filename || detectedName || 'document.pdf';
+      const title    = input.title || filename;
+      await slackContext.uploadFile(buffer, filename, title);
+      return `✓ Uploaded "${title}" to this thread.`;
+    } catch (err) {
+      console.error('[slack-bot] send_tenant_document:', err.message);
+      return `Could not upload document: ${err.message}`;
+    }
+  }
+
   return 'Unknown tool.';
 }
 
@@ -173,7 +252,7 @@ function saveHistory(threadTs, history) {
  * @param {string} threadTs  - Slack thread_ts used as conversation key.
  * @returns {Promise<string>}
  */
-async function processSlackMessage(userText, threadTs, prefetchedHistory = null) {
+async function processSlackMessage(userText, threadTs, prefetchedHistory = null, slackContext = null) {
   const history  = prefetchedHistory ?? getHistory(threadTs);
   const messages = [...history, { role: 'user', content: userText }];
 
@@ -202,7 +281,7 @@ async function processSlackMessage(userText, threadTs, prefetchedHistory = null)
     const toolResults = [];
     for (const block of response.content) {
       if (block.type !== 'tool_use') continue;
-      const result = await executeTool(block.name, block.input);
+      const result = await executeTool(block.name, block.input, slackContext);
       toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result });
     }
     messages.push({ role: 'user', content: toolResults });
