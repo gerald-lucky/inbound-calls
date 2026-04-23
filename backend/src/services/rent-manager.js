@@ -571,30 +571,61 @@ async function getCashPayCode(tenantId) {
     console.log(`[rm] CashPay GET /cashpaybarcodes: ${err.message}`);
   }
 
-  // 2. Try UserDefinedValues embed — RM may store the account number as a UDF
+  // 2a. Try UserDefinedValues as a standalone sub-resource
+  try {
+    const data  = await rmGet(`/tenants/${tenantId}/UserDefinedValues`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    console.log(`[rm] CashPay UDF sub-resource: ${items.length} items`);
+    if (items.length) console.log(`[rm] CashPay UDF names:`, items.map(u => `${u.Name ?? u.Label ?? u.FieldName}=${u.Value ?? u.StringValue ?? u.TextValue}`).join(' | '));
+    const match = items.find(u => /cash.?pay|zego|barcode/i.test(u.Name || u.Label || u.FieldName || ''));
+    if (match) {
+      const val = match.Value ?? match.StringValue ?? match.TextValue ?? null;
+      if (val) { console.log(`[rm] CashPay: found in UDF sub-resource "${match.Name}"`); return { code: String(val), source: 'udf' }; }
+    }
+  } catch (err) {
+    console.log(`[rm] CashPay UDF sub-resource: ${err.message}`);
+  }
+
+  // 2b. Try UserDefinedValues as an embed on the tenant record
   try {
     const data = await rmGet(`/tenants/${tenantId}?embeds=UserDefinedValues`);
     const udfs = data?.UserDefinedValues ?? [];
-    const match = udfs.find(u =>
-      /cash.?pay|zego|barcode|account.?number/i.test(u.Name || u.Label || u.FieldName || '')
-    );
+    console.log(`[rm] CashPay UDF embed: ${udfs.length} fields`);
+    if (udfs.length) console.log(`[rm] CashPay UDF embed names:`, udfs.map(u => `${u.Name ?? u.Label ?? u.FieldName}=${u.Value ?? u.StringValue ?? u.TextValue}`).join(' | '));
+    const match = udfs.find(u => /cash.?pay|zego|barcode/i.test(u.Name || u.Label || u.FieldName || ''));
     if (match) {
       const val = match.Value ?? match.StringValue ?? match.TextValue ?? null;
-      if (val) {
-        console.log(`[rm] CashPay: found in UDF "${match.Name}" for tenant ${tenantId}`);
-        return { code: String(val), source: 'udf' };
-      }
+      if (val) { console.log(`[rm] CashPay: found in UDF embed "${match.Name}"`); return { code: String(val), source: 'udf' }; }
     }
-    if (udfs.length) console.log(`[rm] CashPay UDFs present but no match:`, udfs.map(u => u.Name).join(', '));
   } catch (err) {
-    console.log(`[rm] CashPay UDF probe: ${err.message}`);
+    console.log(`[rm] CashPay UDF embed: ${err.message}`);
+  }
+
+  // 2c. Try global UserDefinedValues endpoint filtered by tenant
+  try {
+    const data  = await rmGet(`/UserDefinedValues?filters=EntityID:eq:${tenantId},EntityType:eq:Tenant&pagesize=50`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    console.log(`[rm] CashPay global UDV: ${items.length} records`);
+    if (items.length) console.log(`[rm] CashPay global UDV names:`, items.map(u => `${u.Name ?? u.Label ?? u.UserDefinedFieldName}=${u.Value ?? u.StringValue}`).join(' | '));
+    const match = items.find(u => /cash.?pay|zego|barcode/i.test(u.Name || u.Label || u.UserDefinedFieldName || ''));
+    if (match) {
+      const val = match.Value ?? match.StringValue ?? null;
+      if (val) { console.log(`[rm] CashPay: found in global UDV`); return { code: String(val), source: 'udf' }; }
+    }
+  } catch (err) {
+    console.log(`[rm] CashPay global UDV: ${err.message}`);
   }
 
   // 3. POST to generate a new code only if nothing was found above
   console.log(`[rm] CashPay: generating new code via POST for tenant ${tenantId}`);
-  const data = await rmPost(`/tenants/${tenantId}/cashpaybarcodes`, { LocationID: LOC_ID });
-  const code  = data?.BarcodeNumber ?? data?.AccountNumber ?? data?.Code ?? null;
-  return { code: code ? String(code) : null, source: 'generated', raw: data };
+  try {
+    const data = await rmPost(`/tenants/${tenantId}/cashpaybarcodes`, { LocationID: LOC_ID });
+    const code  = data?.BarcodeNumber ?? data?.AccountNumber ?? data?.Code ?? null;
+    return { code: code ? String(code) : null, source: 'generated', raw: data };
+  } catch (err) {
+    console.log(`[rm] CashPay POST also failed: ${err.message}`);
+    return { code: null, source: 'none', raw: { error: err.message } };
+  }
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
