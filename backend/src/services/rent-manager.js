@@ -555,11 +555,46 @@ Vacancy Rate: ${vacancyRate}%${note}${vacantList ? `\n\nVacant Units: ${vacantLi
 
 
 
-async function generateCashPayCode(tenantId) {
-  // Zego CashPay barcode via Rent Manager API
-  // Endpoint: POST /tenants/{id}/cashpaybarcodes  — verify in RM Swagger if this 404s
+async function getCashPayCode(tenantId) {
+  // 1. Try GET /tenants/{id}/cashpaybarcodes — read existing code without touching it
+  try {
+    const data  = await rmGet(`/tenants/${tenantId}/cashpaybarcodes`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : null);
+    const code  = items
+      ? (items[0]?.BarcodeNumber ?? items[0]?.AccountNumber ?? items[0]?.Code ?? items[0])
+      : (data?.BarcodeNumber ?? data?.AccountNumber ?? data?.Code ?? null);
+    if (code) {
+      console.log(`[rm] CashPay: found existing barcode via GET for tenant ${tenantId}`);
+      return { code: String(code), source: 'existing' };
+    }
+  } catch (err) {
+    console.log(`[rm] CashPay GET /cashpaybarcodes: ${err.message}`);
+  }
+
+  // 2. Try UserDefinedValues embed — RM may store the account number as a UDF
+  try {
+    const data = await rmGet(`/tenants/${tenantId}?embeds=UserDefinedValues`);
+    const udfs = data?.UserDefinedValues ?? [];
+    const match = udfs.find(u =>
+      /cash.?pay|zego|barcode|account.?number/i.test(u.Name || u.Label || u.FieldName || '')
+    );
+    if (match) {
+      const val = match.Value ?? match.StringValue ?? match.TextValue ?? null;
+      if (val) {
+        console.log(`[rm] CashPay: found in UDF "${match.Name}" for tenant ${tenantId}`);
+        return { code: String(val), source: 'udf' };
+      }
+    }
+    if (udfs.length) console.log(`[rm] CashPay UDFs present but no match:`, udfs.map(u => u.Name).join(', '));
+  } catch (err) {
+    console.log(`[rm] CashPay UDF probe: ${err.message}`);
+  }
+
+  // 3. POST to generate a new code only if nothing was found above
+  console.log(`[rm] CashPay: generating new code via POST for tenant ${tenantId}`);
   const data = await rmPost(`/tenants/${tenantId}/cashpaybarcodes`, { LocationID: LOC_ID });
-  return data;
+  const code  = data?.BarcodeNumber ?? data?.AccountNumber ?? data?.Code ?? null;
+  return { code: code ? String(code) : null, source: 'generated', raw: data };
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -635,7 +670,7 @@ module.exports = {
   lookupTenantByName,
   lookupTenantByUnit,
   getPaymentHistory,
-  generateCashPayCode,
+  getCashPayCode,
   getVacancyReport,
   buildAccountSummary,
   buildCallerContext,

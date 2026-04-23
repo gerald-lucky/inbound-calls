@@ -57,7 +57,7 @@ const TOOLS = [
   },
   {
     name: 'generate_cashpay_code',
-    description: "Generate a Zego CashPay code so a tenant can pay cash at Walmart/CVS.",
+    description: "Look up (or generate if none exists) a tenant's Zego CashPay account number for paying cash at Walmart/CVS.",
     input_schema: {
       type: 'object',
       properties: {
@@ -108,13 +108,18 @@ async function executeTool(name, input) {
 
   if (name === 'generate_cashpay_code') {
     try {
-      const result = await rm.generateCashPayCode(input.tenant_id);
-      if (!result) return 'CashPay code generated — check Rent Manager for details.';
-      const code    = result.BarcodeNumber || result.Code || result.barcode || JSON.stringify(result);
-      const expires = result.ExpirationDate ? ` (expires ${result.ExpirationDate})` : '';
-      return `CashPay code: *${code}*${expires}\nTenant can use this at Walmart, CVS, or any PayNearMe/Zego location.`;
+      const result  = await rm.getCashPayCode(input.tenant_id);
+      const { code, source, raw } = result ?? {};
+      if (!code) {
+        const detail = raw ? ` Raw response: ${JSON.stringify(raw)}` : '';
+        return `No CashPay account number found for this tenant.${detail}`;
+      }
+      const label   = source === 'existing' ? 'CashPay account number (existing)'
+                    : source === 'udf'      ? 'CashPay account number (from tenant record)'
+                    :                         'CashPay account number (newly generated)';
+      return `${label}: *${code}*\nTenant can pay cash at Walmart, CVS, or any Zego/PayNearMe location using this number.`;
     } catch (err) {
-      return `Could not generate CashPay code: ${err.message}`;
+      return `Could not retrieve CashPay code: ${err.message}`;
     }
   }
 
