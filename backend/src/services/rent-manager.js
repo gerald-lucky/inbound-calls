@@ -192,11 +192,32 @@ async function lookupTenantByName(firstName, lastName) {
     const data   = await rmGet(`/tenants?${qs}`);
     const items  = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     if (items.length) {
-      const tenant = bestNameMatch(items, fn, ln) ?? items[0];
-      console.log(`[rm] Name match (server): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
-      return tenant;
+      // Only trust results where the name actually matches — never blindly return items[0]
+      // (RM may ignore filter params and return unfiltered results)
+      const tenant = bestNameMatch(items, fn, ln);
+      if (tenant) {
+        console.log(`[rm] Name match (server): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
+        return tenant;
+      }
+      console.log(`[rm] Server returned ${items.length} results but none matched "${fn} ${ln}" — falling through to cache`);
     }
   } catch { /* filter not supported — fall through to cache */ }
+
+  // Server-side last-name-only fallback (handles compound first names like "Jose Francisco")
+  if (ln) {
+    try {
+      const qs    = await buildTenantQS({ LastName: ln, pagesize: 50 });
+      const data  = await rmGet(`/tenants?${qs}`);
+      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+      if (items.length) {
+        const tenant = bestNameMatch(items, fn, ln);
+        if (tenant) {
+          console.log(`[rm] Name match (server last-name-only): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
+          return tenant;
+        }
+      }
+    } catch { /* fall through */ }
+  }
 
   // Cache fallback for fuzzy / partial matches
   try {
@@ -291,7 +312,9 @@ async function lookupTenantByUnit(unitNumber, communityName) {
       }
     }
 
-    // Strategy 1: server-side tenant filter by unit number param
+    // Strategy 1: server-side tenant filter by unit number param.
+    // Only accept results verified by UnitID in lease data — RM may ignore the
+    // filter param and return unfiltered results, so we never use scoped[0] blindly.
     for (const param of ['UnitNumber', 'UnitName', 'LotNumber']) {
       try {
         const qs    = await buildTenantQS({ [param]: unitNumber.trim(), pagesize: 20 });
@@ -301,12 +324,15 @@ async function lookupTenantByUnit(unitNumber, communityName) {
           const scoped = candidatePropIDs.length
             ? items.filter(t => candidatePropIDs.includes(String(t.PropertyID)))
             : items;
-          const active = scoped.find(t => ACTIVE_STATUSES.has((t.Status || '').toLowerCase()))
-                      ?? scoped[0];
-          if (active) {
-            console.log(`[rm] Unit match (server ${param}): ${active.FirstName} ${active.LastName} (ID ${active.TenantID})`);
-            return active;
+          // Require UnitID verification — proves the filter actually worked
+          const verified = scoped.find(t =>
+            (t.Leases || []).some(l => l.UnitID && candidateUnitIDs.has(Number(l.UnitID)))
+          );
+          if (verified) {
+            console.log(`[rm] Unit match (server ${param}, verified): ${verified.FirstName} ${verified.LastName} (ID ${verified.TenantID})`);
+            return verified;
           }
+          console.log(`[rm] Server ${param} returned ${scoped.length} scoped results but none had verified UnitID — skipping`);
         }
       } catch { /* param not supported by this RM instance */ }
     }
