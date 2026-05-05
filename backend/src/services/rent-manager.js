@@ -556,67 +556,20 @@ Vacancy Rate: ${vacancyRate}%${note}${vacantList ? `\n\nVacant Units: ${vacantLi
 
 
 async function getCashPayCode(tenantId) {
-  // 1. Try GET /tenants/{id}/cashpaybarcodes — read existing code without touching it
+  // 1. Official endpoint confirmed by RM support
   try {
-    const data  = await rmGet(`/tenants/${tenantId}/cashpaybarcodes`);
-    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : null);
-    const code  = items
-      ? (items[0]?.BarcodeNumber ?? items[0]?.AccountNumber ?? items[0]?.Code ?? items[0])
-      : (data?.BarcodeNumber ?? data?.AccountNumber ?? data?.Code ?? null);
+    const data = await rmGet(`/Tenants/${tenantId}/CashPayUser`);
+    console.log(`[rm] CashPayUser response:`, JSON.stringify(data));
+    const code = data?.AccountNumber ?? data?.BarcodeNumber ?? data?.Code ?? data?.CashPayAccountNumber ?? null;
     if (code) {
-      console.log(`[rm] CashPay: found existing barcode via GET for tenant ${tenantId}`);
+      console.log(`[rm] CashPay: found via /CashPayUser for tenant ${tenantId}`);
       return { code: String(code), source: 'existing' };
     }
   } catch (err) {
-    console.log(`[rm] CashPay GET /cashpaybarcodes: ${err.message}`);
+    console.log(`[rm] CashPay GET /CashPayUser: ${err.message}`);
   }
 
-  // 2a. Try UserDefinedValues as a standalone sub-resource
-  try {
-    const data  = await rmGet(`/tenants/${tenantId}/UserDefinedValues`);
-    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-    console.log(`[rm] CashPay UDF sub-resource: ${items.length} items`);
-    if (items.length) console.log(`[rm] CashPay UDF names:`, items.map(u => `${u.Name ?? u.Label ?? u.FieldName}=${u.Value ?? u.StringValue ?? u.TextValue}`).join(' | '));
-    const match = items.find(u => /cash.?pay|zego|barcode/i.test(u.Name || u.Label || u.FieldName || ''));
-    if (match) {
-      const val = match.Value ?? match.StringValue ?? match.TextValue ?? null;
-      if (val) { console.log(`[rm] CashPay: found in UDF sub-resource "${match.Name}"`); return { code: String(val), source: 'udf' }; }
-    }
-  } catch (err) {
-    console.log(`[rm] CashPay UDF sub-resource: ${err.message}`);
-  }
-
-  // 2b. Try UserDefinedValues as an embed on the tenant record
-  try {
-    const data = await rmGet(`/tenants/${tenantId}?embeds=UserDefinedValues`);
-    const udfs = data?.UserDefinedValues ?? [];
-    console.log(`[rm] CashPay UDF embed: ${udfs.length} fields`);
-    if (udfs.length) console.log(`[rm] CashPay UDF embed names:`, udfs.map(u => `${u.Name ?? u.Label ?? u.FieldName}=${u.Value ?? u.StringValue ?? u.TextValue}`).join(' | '));
-    const match = udfs.find(u => /cash.?pay|zego|barcode/i.test(u.Name || u.Label || u.FieldName || ''));
-    if (match) {
-      const val = match.Value ?? match.StringValue ?? match.TextValue ?? null;
-      if (val) { console.log(`[rm] CashPay: found in UDF embed "${match.Name}"`); return { code: String(val), source: 'udf' }; }
-    }
-  } catch (err) {
-    console.log(`[rm] CashPay UDF embed: ${err.message}`);
-  }
-
-  // 2c. Try global UserDefinedValues endpoint filtered by tenant
-  try {
-    const data  = await rmGet(`/UserDefinedValues?filters=EntityID:eq:${tenantId},EntityType:eq:Tenant&pagesize=50`);
-    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-    console.log(`[rm] CashPay global UDV: ${items.length} records`);
-    if (items.length) console.log(`[rm] CashPay global UDV names:`, items.map(u => `${u.Name ?? u.Label ?? u.UserDefinedFieldName}=${u.Value ?? u.StringValue}`).join(' | '));
-    const match = items.find(u => /cash.?pay|zego|barcode/i.test(u.Name || u.Label || u.UserDefinedFieldName || ''));
-    if (match) {
-      const val = match.Value ?? match.StringValue ?? null;
-      if (val) { console.log(`[rm] CashPay: found in global UDV`); return { code: String(val), source: 'udf' }; }
-    }
-  } catch (err) {
-    console.log(`[rm] CashPay global UDV: ${err.message}`);
-  }
-
-  // 3. POST to generate a new code only if nothing was found above
+  // 2. POST to generate a new code only if no existing code found
   console.log(`[rm] CashPay: generating new code via POST for tenant ${tenantId}`);
   try {
     const data = await rmPost(`/tenants/${tenantId}/cashpaybarcodes`, { LocationID: LOC_ID });
