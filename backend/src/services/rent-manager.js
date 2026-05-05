@@ -402,12 +402,31 @@ async function lookupTenantByUnit(unitNumber, communityName) {
 
 async function getPaymentHistory(tenantId, limit = 8) {
   try {
-    const data = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${limit}`);
-    return data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    // Sort descending by date so payments[0] is the most recent (used for running balance)
+    const data = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${limit}&orderby=TransactionDate:desc`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    if (items[0]) console.log(`[rm] Transaction sample keys:`, Object.keys(items[0]).join(', '));
+    return items;
   } catch (err) {
     console.error('[rm] getPaymentHistory:', err.message);
     return [];
   }
+}
+
+async function getTenantBalance(tenantId) {
+  // Fetch single tenant record with balance embeds to get accurate balance due
+  for (const embed of ['CurrentBalance', 'Balance', 'AccountBalance', '']) {
+    try {
+      const qs   = embed ? `embeds=${embed}` : '';
+      const data = await rmGet(`/tenants/${tenantId}${qs ? '?' + qs : ''}`);
+      const bal  = data?.CurrentBalance ?? data?.Balance ?? data?.BalanceDue ?? data?.AmountDue ?? null;
+      if (bal !== null) {
+        console.log(`[rm] Balance via embed "${embed}": ${bal}`);
+        return Number(bal);
+      }
+    } catch { /* try next */ }
+  }
+  return null;
 }
 
 // ── Properties cache ──────────────────────────────────────────────────────────
@@ -662,15 +681,32 @@ async function listProperties() {
 // ── Context builders ──────────────────────────────────────────────────────────
 
 function buildAccountSummary(tenant, payments = []) {
-  // Unit number: from embedded Units (if embed works), injected _unitName, or lease
+  // TenantDisplayID is the Account# shown in RM UI; TenantID is the internal DB key
+  const displayId = tenant.TenantDisplayID ?? tenant.TenantID;
+
+  // Unit: try multiple paths since the field location varies by RM embed
   const unit = tenant._unitName
     ?? tenant.Units?.[0]?.UnitNumber
     ?? tenant.Leases?.[0]?.UnitLeases?.[0]?.UnitName
+    ?? tenant.Leases?.[0]?.UnitLeases?.[0]?.UnitNumber
     ?? tenant.Leases?.[0]?.UnitName
+    ?? tenant.Leases?.[0]?.UnitNumber
     ?? '—';
-  const balance = tenant.Balance ?? tenant.CurrentBalance ?? tenant.BalanceDue ?? 0;
-  const name    = `${tenant.FirstName} ${tenant.LastName}`;
-  const twaUrl  = `https://${COMPANY_CODE}.tenantwebaccess.com`;
+
+  // Balance: tenant record usually has no balance field — use running balance from most
+  // recent transaction, fall back to any balance field on the tenant record
+  const balanceFromTx = payments.length > 0
+    ? (payments[0].Balance ?? payments[0].CurrentBalance ?? payments[0].RunningBalance ?? null)
+    : null;
+  const balance = balanceFromTx
+    ?? tenant.Balance ?? tenant.CurrentBalance ?? tenant.BalanceDue ?? tenant.AmountDue ?? 0;
+
+  const name   = `${tenant.FirstName} ${tenant.LastName}`;
+  const twaUrl = `https://${COMPANY_CODE}.tenantwebaccess.com`;
+
+  // Log what we got so we can debug missing fields
+  if (balanceFromTx === null) console.log(`[rm] Balance fields on tenant:`, { Balance: tenant.Balance, CurrentBalance: tenant.CurrentBalance, BalanceDue: tenant.BalanceDue });
+  if (payments[0]) console.log(`[rm] Transaction fields sample:`, Object.keys(payments[0]).join(', '));
 
   const historyLines = payments.length
     ? payments.map((t) =>
@@ -680,7 +716,7 @@ function buildAccountSummary(tenant, payments = []) {
 
   return `RESIDENT ACCOUNT (Rent Manager):
 Name: ${name}
-Tenant ID: ${tenant.TenantID}
+Account#: ${displayId}
 Unit: ${unit}
 Balance Due: $${Number(balance).toFixed(2)}
 
@@ -688,9 +724,9 @@ RECENT TRANSACTIONS:
 ${historyLines}
 
 TWA (Tenant Web Access):
-  Account Number: ${tenant.TenantID}
+  Account Number: ${displayId}
   URL: ${twaUrl}
-  (Tenant uses their Tenant ID as account number to register/log in)
+  (Tenant uses their Account# to register/log in)
 
 Address the caller by their first name (${tenant.FirstName}).`;
 }
@@ -771,6 +807,7 @@ module.exports = {
   lookupTenantByName,
   lookupTenantByUnit,
   getPaymentHistory,
+  getTenantBalance,
   getCashPayCode,
   getVacancyReport,
   buildAccountSummary,
