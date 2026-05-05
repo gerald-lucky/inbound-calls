@@ -684,14 +684,19 @@ async function resolveTenantLocation(tenant) {
   try {
     const [allUnits, propMap] = await Promise.all([getAllUnits(), getPropertyMap()]);
 
-    // Find the UnitID from the lease
-    const unitId = tenant.Leases?.[0]?.UnitID
-      ?? tenant.Leases?.[0]?.UnitLeases?.[0]?.UnitID
+    // Pick the active lease (no end date or end date in future); fall back to first
+    const now         = new Date();
+    const activeLease = (tenant.Leases || []).find(l =>
+      !l.EndDate || new Date(l.EndDate) > now
+    ) ?? tenant.Leases?.[0] ?? null;
+
+    const unitId = activeLease?.UnitID
+      ?? activeLease?.UnitLeases?.[0]?.UnitID
       ?? null;
 
     let unitName = tenant._unitName
-      ?? tenant.Leases?.[0]?.UnitName
-      ?? tenant.Leases?.[0]?.UnitNumber
+      ?? activeLease?.UnitName
+      ?? activeLease?.UnitNumber
       ?? null;
 
     if (!unitName && unitId) {
