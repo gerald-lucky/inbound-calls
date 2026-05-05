@@ -178,39 +178,73 @@ async function lookupTenantByPhone(phoneNumber) {
   }
 }
 
-async function lookupTenantByName(firstName, lastName) {
+async function lookupTenantByName(firstName, lastName, communityName) {
   const fn = (firstName || '').trim();
   const ln = (lastName  || '').trim();
   if (!fn && !ln) return null;
 
-  // Server-side search: like typing into RM's search box
+  // Resolve property IDs if community name is given — used to disambiguate duplicate names
+  let communityPropIDs = [];
+  if (communityName) {
+    try {
+      const propMap = await getPropertyMap();
+      const q       = communityName.toLowerCase().replace(/[,.']/g, '');
+      const STOP    = new Set(['community','communities','mobile','home','park','parks',
+                               'property','properties','llc','inc','corp','ltd','mhc',
+                               'the','and','of','at','in','management','realty']);
+      const words   = q.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, ''))
+                       .filter(w => w.length >= 4 && !STOP.has(w));
+      communityPropIDs = [...propMap.entries()]
+        .filter(([, pname]) => {
+          const pn = pname.toLowerCase();
+          if (pn.includes(q)) return true;
+          return words.length > 0 && words.every(w => pn.includes(w));
+        })
+        .map(([id]) => String(id));
+      if (!communityPropIDs.length && words.length) {
+        communityPropIDs = [...propMap.entries()]
+          .filter(([, pname]) => words.some(w => pname.toLowerCase().includes(w)))
+          .map(([id]) => String(id));
+      }
+      console.log(`[rm] Name lookup: communityName="${communityName}" → propIDs [${communityPropIDs.join(', ')}]`);
+    } catch { /* community filter optional — continue without it */ }
+  }
+
+  // Filter a candidate list to the right community, then name-match within it
+  function pickFromList(items) {
+    const scoped = communityPropIDs.length
+      ? items.filter(t => communityPropIDs.includes(String(t.PropertyID)))
+      : items;
+    // Prefer community-scoped match; fall back to unscoped if nothing found
+    return bestNameMatch(scoped, fn, ln) ?? (scoped.length ? null : bestNameMatch(items, fn, ln));
+  }
+
+  // Server-side search
   try {
-    const params = { pagesize: 20 };
+    const params = { pagesize: 50 };
     if (ln) params.LastName  = ln;
     if (fn) params.FirstName = fn;
-    const qs     = await buildTenantQS(params);
-    const data   = await rmGet(`/tenants?${qs}`);
-    const items  = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    const qs    = await buildTenantQS(params);
+    const data  = await rmGet(`/tenants?${qs}`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     if (items.length) {
-      // Only trust results where the name actually matches — never blindly return items[0]
-      // (RM may ignore filter params and return unfiltered results)
-      const tenant = bestNameMatch(items, fn, ln);
+      const tenant = pickFromList(items);
       if (tenant) {
         console.log(`[rm] Name match (server): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
         return tenant;
       }
-      console.log(`[rm] Server returned ${items.length} results but none matched "${fn} ${ln}" — falling through to cache`);
+      console.log(`[rm] Server returned ${items.length} results but none matched "${fn} ${ln}" — falling through`);
     }
-  } catch { /* filter not supported — fall through to cache */ }
+  } catch { /* fall through */ }
 
-  // Server-side last-name-only fallback (handles compound first names like "Jose Francisco")
+  // Last-name-only fallback (handles compound first names like "Jose Francisco")
   if (ln) {
     try {
       const qs    = await buildTenantQS({ LastName: ln, pagesize: 50 });
       const data  = await rmGet(`/tenants?${qs}`);
       const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
       if (items.length) {
-        const tenant = bestNameMatch(items, fn, ln);
+        const tenant = pickFromList(items);
         if (tenant) {
           console.log(`[rm] Name match (server last-name-only): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
           return tenant;
@@ -219,10 +253,10 @@ async function lookupTenantByName(firstName, lastName) {
     } catch { /* fall through */ }
   }
 
-  // Cache fallback for fuzzy / partial matches
+  // Cache fallback
   try {
     const tenants = await getAllTenants();
-    const tenant  = bestNameMatch(tenants, fn, ln);
+    const tenant  = pickFromList(tenants);
     if (tenant) console.log(`[rm] Name match (cache): ${tenant.FirstName} ${tenant.LastName} (ID ${tenant.TenantID})`);
     return tenant;
   } catch (err) {

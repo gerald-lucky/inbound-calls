@@ -118,8 +118,8 @@ async function executeTool(name, input, slackContext = null) {
   if (name === 'lookup_resident') {
     const { first_name, last_name, unit_number, community_name } = input;
     let tenant = null;
-    // Try name first (direct server-side filter, most reliable); unit lookup as fallback
-    if (first_name || last_name) tenant = await rm.lookupTenantByName(first_name, last_name);
+    // Try name first scoped to community if provided; unit lookup as fallback
+    if (first_name || last_name) tenant = await rm.lookupTenantByName(first_name, last_name, community_name);
     if (!tenant && unit_number) tenant = await rm.lookupTenantByUnit(unit_number, community_name);
     if (!tenant) return 'No resident found with that name or unit number.';
     const payments = await rm.getPaymentHistory(tenant.TenantID, 6);
