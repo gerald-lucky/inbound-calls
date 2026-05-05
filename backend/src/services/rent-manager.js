@@ -402,11 +402,18 @@ async function lookupTenantByUnit(unitNumber, communityName) {
 
 async function getPaymentHistory(tenantId, limit = 8) {
   try {
-    // Sort descending by date so payments[0] is the most recent (used for running balance)
-    const data = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${limit}&orderby=TransactionDate:desc`);
+    // Fetch a generous page and sort client-side — RM's orderby param is unreliable
+    // and may return oldest-first, causing Claude to report stale 2023 dates as "recent"
+    const fetchSize = Math.max(limit * 4, 50);
+    const data  = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${fetchSize}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     if (items[0]) console.log(`[rm] Transaction sample keys:`, Object.keys(items[0]).join(', '));
-    return items;
+
+    // Sort newest-first, then take the most recent `limit` entries
+    const sorted = items
+      .filter(t => t.TransactionDate)
+      .sort((a, b) => new Date(b.TransactionDate) - new Date(a.TransactionDate));
+    return sorted.slice(0, limit);
   } catch (err) {
     console.error('[rm] getPaymentHistory:', err.message);
     return [];
