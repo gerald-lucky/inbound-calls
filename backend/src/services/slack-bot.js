@@ -118,8 +118,22 @@ async function executeTool(name, input, slackContext = null) {
   if (name === 'lookup_resident') {
     const { first_name, last_name, unit_number, community_name } = input;
     let tenant = null;
-    // Try name first scoped to community if provided; unit lookup as fallback
-    if (first_name || last_name) tenant = await rm.lookupTenantByName(first_name, last_name, community_name);
+
+    if (first_name || last_name) {
+      // Check for duplicate names before committing to one tenant
+      const matches = await rm.findAllNameMatches(first_name, last_name, community_name);
+      if (matches.length > 1 && !community_name && !unit_number) {
+        // Resolve location for each candidate so staff can identify the right one
+        const details = await Promise.all(matches.map(t => rm.resolveTenantLocation(t)));
+        const list = matches.map((t, i) => {
+          const loc = details[i];
+          return `• ${t.FirstName} ${t.LastName} — Unit ${loc.unitName}, ${loc.communityName} (Account# ${t.TenantDisplayID ?? t.TenantID})`;
+        }).join('\n');
+        return `Multiple residents match that name. Please specify the community or unit number:\n${list}`;
+      }
+      tenant = matches[0] ?? null;
+    }
+
     if (!tenant && unit_number) tenant = await rm.lookupTenantByUnit(unit_number, community_name);
     if (!tenant) return 'No resident found with that name or unit number.';
     const [payments, balance, location] = await Promise.all([

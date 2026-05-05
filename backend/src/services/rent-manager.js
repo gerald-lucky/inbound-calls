@@ -836,11 +836,83 @@ async function downloadRmFile(url) {
   }
 }
 
+// Returns ALL tenants whose first+last name exactly matches (case-insensitive).
+// Scoped to communityName's property IDs when provided.
+// Used by executeTool to detect duplicates and ask for disambiguation.
+async function findAllNameMatches(firstName, lastName, communityName) {
+  const fn = (firstName || '').trim().toLowerCase();
+  const ln = (lastName  || '').trim().toLowerCase();
+  if (!fn && !ln) return [];
+
+  let propIDs = [];
+  if (communityName) {
+    const propMap = await getPropertyMap();
+    const q     = communityName.toLowerCase().replace(/[,.']/g, '');
+    const STOP  = new Set(['community','communities','mobile','home','park','parks',
+                           'property','properties','llc','inc','corp','ltd','mhc',
+                           'the','and','of','at','in','management','realty']);
+    const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, ''))
+                   .filter(w => w.length >= 4 && !STOP.has(w));
+    propIDs = [...propMap.entries()]
+      .filter(([, pn]) => pn.toLowerCase().includes(q) || (words.length && words.every(w => pn.toLowerCase().includes(w))))
+      .map(([id]) => String(id));
+  }
+
+  function isExactMatch(t) {
+    const tf = (t.FirstName || '').toLowerCase(), tl = (t.LastName || '').toLowerCase();
+    // Full match: "jose francisco" == "jose francisco"
+    if (fn && ln && tf === fn && tl === ln) return true;
+    // Compound first name: fn="jose francisco", lastName stored as "barahona"
+    if (fn && !ln && tf === fn) return true;
+    if (!fn && ln && tl === ln) return true;
+    // RM may store "Jose" / "Francisco Barahona" split differently
+    const full = `${tf} ${tl}`.trim();
+    const query = `${fn} ${ln}`.trim();
+    if (full === query) return true;
+    return false;
+  }
+
+  // Collect from server search + cache, deduplicate by TenantID
+  const seen = new Map();
+  const addAll = (items) => {
+    for (const t of items) {
+      if (isExactMatch(t) && !seen.has(t.TenantID)) seen.set(t.TenantID, t);
+    }
+  };
+
+  try {
+    const params = { pagesize: 50 };
+    if (ln) params.LastName  = lastName.trim();
+    if (fn) params.FirstName = firstName.trim();
+    const data  = await rmGet(`/tenants?${await buildTenantQS(params)}`);
+    addAll(data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []));
+  } catch { /* ignore */ }
+
+  if (ln && seen.size === 0) {
+    try {
+      const data  = await rmGet(`/tenants?${await buildTenantQS({ LastName: lastName.trim(), pagesize: 50 })}`);
+      addAll(data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []));
+    } catch { /* ignore */ }
+  }
+
+  try {
+    addAll(await getAllTenants());
+  } catch { /* ignore */ }
+
+  let all = [...seen.values()];
+  if (propIDs.length) {
+    const scoped = all.filter(t => propIDs.includes(String(t.PropertyID)));
+    if (scoped.length) all = scoped;
+  }
+  return all;
+}
+
 module.exports = {
   lookupTenantByPhone,
   listProperties,
   lookupTenantByName,
   lookupTenantByUnit,
+  findAllNameMatches,
   getPaymentHistory,
   getTenantBalance,
   getCashPayCode,
