@@ -122,12 +122,13 @@ async function executeTool(name, input, slackContext = null) {
     if (first_name || last_name) tenant = await rm.lookupTenantByName(first_name, last_name, community_name);
     if (!tenant && unit_number) tenant = await rm.lookupTenantByUnit(unit_number, community_name);
     if (!tenant) return 'No resident found with that name or unit number.';
-    const [payments, balance] = await Promise.all([
+    const [payments, balance, location] = await Promise.all([
       rm.getPaymentHistory(tenant.TenantID, 6),
       rm.getTenantBalance(tenant.TenantID),
+      rm.resolveTenantLocation(tenant),
     ]);
     if (balance !== null) tenant.Balance = balance;
-    return rm.buildAccountSummary(tenant, payments);
+    return rm.buildAccountSummary(tenant, payments, location);
   }
 
   if (name === 'get_payment_history') {

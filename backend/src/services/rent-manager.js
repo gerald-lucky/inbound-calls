@@ -678,20 +678,43 @@ async function listProperties() {
   return [...propMap.values()].filter(Boolean).sort();
 }
 
-// ── Context builders ──────────────────────────────────────────────────────────
+// Resolve unit name and community name for a tenant by cross-referencing
+// lease.UnitID against the unit cache and tenant.PropertyID against propMap.
+async function resolveTenantLocation(tenant) {
+  try {
+    const [allUnits, propMap] = await Promise.all([getAllUnits(), getPropertyMap()]);
 
-function buildAccountSummary(tenant, payments = []) {
-  // TenantDisplayID is the Account# shown in RM UI; TenantID is the internal DB key
-  const displayId = tenant.TenantDisplayID ?? tenant.TenantID;
+    // Find the UnitID from the lease
+    const unitId = tenant.Leases?.[0]?.UnitID
+      ?? tenant.Leases?.[0]?.UnitLeases?.[0]?.UnitID
+      ?? null;
 
-  // Unit: try multiple paths since the field location varies by RM embed
-  const unit = tenant._unitName
-    ?? tenant.Units?.[0]?.UnitNumber
-    ?? tenant.Leases?.[0]?.UnitLeases?.[0]?.UnitName
-    ?? tenant.Leases?.[0]?.UnitLeases?.[0]?.UnitNumber
-    ?? tenant.Leases?.[0]?.UnitName
-    ?? tenant.Leases?.[0]?.UnitNumber
-    ?? '—';
+    let unitName = tenant._unitName
+      ?? tenant.Leases?.[0]?.UnitName
+      ?? tenant.Leases?.[0]?.UnitNumber
+      ?? null;
+
+    if (!unitName && unitId) {
+      const u = allUnits.find(u => Number(u.UnitID) === Number(unitId));
+      if (u) unitName = u.Name || u.UnitNumber || String(unitId);
+    }
+
+    const propId      = String(tenant.PropertyID || '');
+    const communityName = propMap.get(Number(propId)) ?? propMap.get(propId) ?? null;
+
+    console.log(`[rm] Location resolved: unit="${unitName}" community="${communityName}" (UnitID=${unitId}, PropID=${propId})`);
+    return { unitName: unitName ?? '—', communityName: communityName ?? '—' };
+  } catch (err) {
+    console.error('[rm] resolveTenantLocation:', err.message);
+    return { unitName: '—', communityName: '—' };
+  }
+}
+
+
+function buildAccountSummary(tenant, payments = [], location = null) {
+  const displayId     = tenant.TenantDisplayID ?? tenant.TenantID;
+  const unit          = location?.unitName      ?? '—';
+  const communityName = location?.communityName ?? '—';
 
   // Balance: tenant record usually has no balance field — use running balance from most
   // recent transaction, fall back to any balance field on the tenant record
@@ -717,6 +740,7 @@ function buildAccountSummary(tenant, payments = []) {
   return `RESIDENT ACCOUNT (Rent Manager):
 Name: ${name}
 Account#: ${displayId}
+Community: ${communityName}
 Unit: ${unit}
 Balance Due: $${Number(balance).toFixed(2)}
 
@@ -811,6 +835,7 @@ module.exports = {
   getCashPayCode,
   getVacancyReport,
   buildAccountSummary,
+  resolveTenantLocation,
   buildCallerContext,
   getTenantStatements,
   getTenantHistoryFiles,
