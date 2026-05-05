@@ -502,41 +502,40 @@ async function getAllUnits() {
 const ACTIVE_STATUSES = new Set(['current', 'eviction', 'notice', 'active']);
 
 async function buildOccupancyMap() {
-  const pagesize   = 500;
+  // Reuse the tenant cache (already includes Leases embed) so we can extract
+  // UnitIDs from active leases — far more accurate than counting by status.
+  const tenants    = await getAllTenants();
+  const now        = new Date();
   const byID       = new Set();
   const byName     = new Set();
-  const countByProp = new Map(); // PropertyID string → count of active tenants
+  const countByProp = new Map();
   const statusSeen  = new Set();
-  let page         = 1;
 
-  while (true) {
-    const data  = await rmGet(`/tenants?pagesize=${pagesize}&pagenumber=${page}`);
-    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-    console.log(`[rm] Occupancy page ${page}: ${items.length} items`);
-    if (page === 1 && items[0]) console.log('[rm] Basic tenant keys:', Object.keys(items[0]).join(', '));
+  for (const t of tenants) {
+    const status = (t.Status || '').toLowerCase();
+    statusSeen.add(status || 'empty');
 
-    for (const t of items) {
-      // Unit-ID-based occupancy (if RM ever exposes these directly)
-      if (t.UnitID)        byID.add(Number(t.UnitID));
-      if (t.CurrentUnitID) byID.add(Number(t.CurrentUnitID));
-      if (t.LotID)         byID.add(Number(t.LotID));
-      const n = (t.UnitNumber || t.LotNumber || '').trim();
-      if (n) byName.add(n.toLowerCase());
+    if (ACTIVE_STATUSES.has(status)) {
+      const pid = String(t.PropertyID);
+      countByProp.set(pid, (countByProp.get(pid) || 0) + 1);
 
-      // Count-based fallback: active tenants per property
-      const status = (t.Status || '').toLowerCase();
-      statusSeen.add(status || 'empty');
-      if (ACTIVE_STATUSES.has(status)) {
-        const pid = String(t.PropertyID);
-        countByProp.set(pid, (countByProp.get(pid) || 0) + 1);
+      // Extract UnitIDs from active leases — this gives us exact unit-level occupancy
+      for (const l of (t.Leases || [])) {
+        const leaseActive = !l.EndDate || new Date(l.EndDate) > now;
+        if (leaseActive && l.UnitID) byID.add(Number(l.UnitID));
+        // Also check nested UnitLeases
+        for (const ul of (l.UnitLeases || [])) {
+          if (ul.UnitID) byID.add(Number(ul.UnitID));
+        }
       }
     }
 
-    if (items.length < pagesize) break;
-    if (++page > 20) break;
+    // Keep name-based fallback for units without IDs
+    const n = (t.UnitNumber || t.LotNumber || '').trim();
+    if (n) byName.add(n.toLowerCase());
   }
 
-  console.log(`[rm] Occupancy map: ${byID.size} IDs, ${byName.size} names, ${countByProp.size} props with active tenants`);
+  console.log(`[rm] Occupancy map: ${byID.size} unit IDs from leases, ${byName.size} names, ${countByProp.size} props`);
   console.log(`[rm] Tenant statuses seen: ${[...statusSeen].join(', ')}`);
   return { byID, byName, countByProp };
 }
