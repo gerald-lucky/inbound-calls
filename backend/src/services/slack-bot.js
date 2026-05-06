@@ -122,7 +122,12 @@ async function executeTool(name, input, slackContext = null) {
     if (first_name || last_name) {
       // Check for duplicate names before committing to one tenant
       const matches = await rm.findAllNameMatches(first_name, last_name, community_name);
-      if (matches.length > 1 && !community_name && !unit_number) {
+      // Only ask for disambiguation when EVERY match has the exact same full name
+      // (true duplicates). Partial matches returning multiple results should just
+      // pick the best one rather than confusing staff with a disambiguation prompt.
+      const fullName = t => `${(t.FirstName || '').toLowerCase()} ${(t.LastName || '').toLowerCase()}`.trim();
+      const allIdentical = matches.length > 1 && matches.every(t => fullName(t) === fullName(matches[0]));
+      if (allIdentical && !community_name && !unit_number) {
         // Resolve location for each candidate so staff can identify the right one
         const details = await Promise.all(matches.map(t => rm.resolveTenantLocation(t)));
         const list = matches.map((t, i) => {

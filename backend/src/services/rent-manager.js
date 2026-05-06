@@ -924,25 +924,26 @@ async function findAllNameMatches(firstName, lastName, communityName) {
       .map(([id]) => String(id));
   }
 
-  function isExactMatch(t) {
+  function isMatch(t) {
     const tf = (t.FirstName || '').toLowerCase(), tl = (t.LastName || '').toLowerCase();
-    // Full match: "jose francisco" == "jose francisco"
-    if (fn && ln && tf === fn && tl === ln) return true;
-    // Compound first name: fn="jose francisco", lastName stored as "barahona"
-    if (fn && !ln && tf === fn) return true;
-    if (!fn && ln && tl === ln) return true;
-    // RM may store "Jose" / "Francisco Barahona" split differently
-    const full = `${tf} ${tl}`.trim();
+    // 1. Both fields exact
+    if ((!fn || tf === fn) && (!ln || tl === ln)) return true;
+    // 2. Full concatenated name matches (handles "Jose" / "Francisco Barahona" vs "Jose Francisco" / "Barahona")
+    const full  = `${tf} ${tl}`.trim();
     const query = `${fn} ${ln}`.trim();
-    if (full === query) return true;
-    return false;
+    if (query && full === query) return true;
+    // 3. Partial includes — same logic as bestNameMatch fallback
+    //    Handles Claude passing "jose" when RM stores "jose francisco"
+    const fnOk = !fn || tf.includes(fn) || fn.includes(tf);
+    const lnOk = !ln || tl.includes(ln) || ln.includes(tl);
+    return fnOk && lnOk;
   }
 
   // Collect from server search + cache, deduplicate by TenantID
   const seen = new Map();
   const addAll = (items) => {
     for (const t of items) {
-      if (isExactMatch(t) && !seen.has(t.TenantID)) seen.set(t.TenantID, t);
+      if (isMatch(t) && !seen.has(t.TenantID)) seen.set(t.TenantID, t);
     }
   };
 
