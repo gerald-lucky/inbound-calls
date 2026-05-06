@@ -17,6 +17,7 @@ You have live access to Rent Manager and can:
 - Provide a tenant's TWA account number and URL for portal/auto-pay setup
 - Get vacancy and occupancy stats for the property
 - Look up recurring charges (waste removal, water, sewer, etc.) configured for a property
+- Read tenant history notes (staff notes, lease events, move-in/out records, violations, communications)
 - List and send tenant documents (account statements, history file attachments) directly into this Slack thread as PDF files
 
 Since this is a text chat you may use formatting, bullet points, and numbers for clarity.
@@ -91,6 +92,21 @@ const TOOLS = [
       properties: {
         community_name: { type: 'string', description: 'Community or property name to filter by (e.g. "Country Estates", "Rainbow Terrace"). Omit to get all properties.' },
       },
+    },
+  },
+  {
+    name: 'get_history_notes',
+    description:
+      'Fetch history notes (staff notes, lease events, communications log) for a tenant from Rent Manager. ' +
+      'Returns note date, subject, body text, and flags any file attachments. ' +
+      'Use this to check for signed leases, move-in/out notes, violation records, or any staff communications.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tenant_id: { type: 'number', description: "Resident's internal TenantID (the 'TenantID (use for tools)' field — NOT the display Account#)" },
+        limit:     { type: 'number', description: 'Max number of notes to return (default 20, most recent first)' },
+      },
+      required: ['tenant_id'],
     },
   },
   {
@@ -207,6 +223,28 @@ async function executeTool(name, input, slackContext = null) {
       return await rm.getVacancyReport(input.community_name);
     } catch (err) {
       return `Could not fetch vacancy report: ${err.message}`;
+    }
+  }
+
+  if (name === 'get_history_notes') {
+    try {
+      const notes = await rm.getHistoryNotes(input.tenant_id, input.limit ?? 20);
+      if (!notes.length) return 'No history notes found for this tenant.';
+
+      const lines = notes.map(n => {
+        const date    = n.Date ? new Date(n.Date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'unknown date';
+        const subject = n.Subject || n.Title || n.Category || '(no subject)';
+        const body    = (n.Body || n.Note || n.Description || n.Comments || n.Comment || '').trim();
+        const attachments = (n.HistoryAttachments || []);
+        const legacyFile  = n.Attachment?.FileName || n.Attachment?.Name || null;
+        const fileCount   = attachments.length || (legacyFile ? 1 : 0);
+        const fileNote    = fileCount ? ` [${fileCount} attachment${fileCount > 1 ? 's' : ''}]` : '';
+        return `• ${date} — ${subject}${fileNote}${body ? `\n  ${body.slice(0, 300)}${body.length > 300 ? '…' : ''}` : ''}`;
+      });
+
+      return `HISTORY NOTES (${notes.length} most recent):\n${lines.join('\n')}`;
+    } catch (err) {
+      return `Could not fetch history notes: ${err.message}`;
     }
   }
 

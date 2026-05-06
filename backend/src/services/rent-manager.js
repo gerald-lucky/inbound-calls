@@ -949,6 +949,21 @@ async function getTenantStatements(tenantId, limit = 5) {
   }
 }
 
+async function getHistoryNotes(tenantId, limit = 20) {
+  try {
+    const data  = await rmGet(
+      `/HistoryNotes?TenantID=${tenantId}&embeds=HistoryAttachments,Attachment&pagesize=${limit}&orderby=Date:desc`
+    );
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    console.log(`[rm] History notes for tenant ${tenantId}: ${items.length} fetched`);
+    if (items[0]) console.log('[rm] HistoryNote sample keys:', Object.keys(items[0]).join(', '));
+    return items;
+  } catch (err) {
+    console.error('[rm] getHistoryNotes:', err.message);
+    return [];
+  }
+}
+
 async function getTenantHistoryFiles(tenantId, limit = 10) {
   try {
     const data  = await rmGet(
@@ -1147,6 +1162,7 @@ module.exports = {
   resolveTenantLocation,
   buildCallerContext,
   getRecurringCharges,
+  getHistoryNotes,
   getTenantStatements,
   getTenantHistoryFiles,
   downloadRmFile,
