@@ -564,12 +564,10 @@ async function getAllUnits() {
 const ACTIVE_STATUSES = new Set(['current', 'eviction', 'notice', 'active']);
 
 async function buildOccupancyMap() {
-  // Reuse the tenant cache (already includes Leases embed) so we can extract
-  // UnitIDs from active leases — far more accurate than counting by status.
-  const tenants    = await getAllTenants();
-  const now        = new Date();
-  const byID       = new Set();
-  const byName     = new Set();
+  const tenants     = await getAllTenants();
+  const now         = new Date();
+  const byID        = new Set();
+  const byNameProp  = new Map(); // propertyID → Set of occupied unit names (scoped to avoid cross-park collisions)
   const countByProp = new Map();
   const statusSeen  = new Set();
 
@@ -581,25 +579,27 @@ async function buildOccupancyMap() {
       const pid = String(t.PropertyID);
       countByProp.set(pid, (countByProp.get(pid) || 0) + 1);
 
-      // Extract UnitIDs from active leases — this gives us exact unit-level occupancy
       for (const l of (t.Leases || [])) {
         const leaseActive = !l.EndDate || new Date(l.EndDate) > now;
         if (leaseActive && l.UnitID) byID.add(Number(l.UnitID));
-        // Also check nested UnitLeases
         for (const ul of (l.UnitLeases || [])) {
           if (ul.UnitID) byID.add(Number(ul.UnitID));
         }
       }
-    }
 
-    // Keep name-based fallback for units without IDs
-    const n = (t.UnitNumber || t.LotNumber || '').trim();
-    if (n) byName.add(n.toLowerCase());
+      // Name fallback scoped to the tenant's own property — prevents lot "9" at
+      // Park A from marking lot "9" at Park B as occupied
+      const n = (t.UnitNumber || t.LotNumber || '').trim().toLowerCase();
+      if (n) {
+        if (!byNameProp.has(pid)) byNameProp.set(pid, new Set());
+        byNameProp.get(pid).add(n);
+      }
+    }
   }
 
-  console.log(`[rm] Occupancy map: ${byID.size} unit IDs from leases, ${byName.size} names, ${countByProp.size} props`);
+  console.log(`[rm] Occupancy map: ${byID.size} unit IDs, ${byNameProp.size} props with name fallback`);
   console.log(`[rm] Tenant statuses seen: ${[...statusSeen].join(', ')}`);
-  return { byID, byName, countByProp };
+  return { byID, byNameProp, countByProp };
 }
 
 async function getVacancyReport(communityName) {
@@ -612,14 +612,16 @@ async function getVacancyReport(communityName) {
 
   if (!allUnits.length) return 'No unit data available from Rent Manager.';
 
-  const { byID, byName, countByProp } = occupancy;
-  const hasUnitLevelData = byID.size > 0 || byName.size > 0;
+  const { byID, byNameProp, countByProp } = occupancy;
+  const hasUnitLevelData = byID.size > 0 || byNameProp.size > 0;
 
-  // Match a unit as occupied by ID first, then by name
+  // Match a unit as occupied by UnitID first, then by name within the same property
   const isOccupied = u => {
     if (byID.has(Number(u.UnitID))) return true;
+    const pid  = String(u.PropertyID);
     const name = (u.Name || u.UnitNumber || '').trim().toLowerCase();
-    return !!name && byName.has(name);
+    const propNames = byNameProp.get(pid);
+    return !!name && !!propNames && propNames.has(name);
   };
 
   // Filter by community/property name if requested
