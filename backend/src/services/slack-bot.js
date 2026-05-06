@@ -16,6 +16,7 @@ You have live access to Rent Manager and can:
 - Generate CashPay codes (Zego) so a tenant can pay cash at Walmart
 - Provide a tenant's TWA account number and URL for portal/auto-pay setup
 - Get vacancy and occupancy stats for the property
+- Look up recurring charges (waste removal, water, sewer, etc.) configured for a property
 - List and send tenant documents (account statements, history file attachments) directly into this Slack thread as PDF files
 
 Since this is a text chat you may use formatting, bullet points, and numbers for clarity.
@@ -79,6 +80,16 @@ const TOOLS = [
       type: 'object',
       properties: {
         community_name: { type: 'string', description: 'Optional community or property name to filter by (e.g. "Baudin", "Messer")' },
+      },
+    },
+  },
+  {
+    name: 'get_recurring_charges',
+    description: 'List recurring charges (fees) configured in Rent Manager for a property — e.g. waste removal, water, sewer, late fees. Optionally filter by community name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        community_name: { type: 'string', description: 'Community or property name to filter by (e.g. "Country Estates", "Rainbow Terrace"). Omit to get all properties.' },
       },
     },
   },
@@ -173,6 +184,14 @@ async function executeTool(name, input, slackContext = null) {
       return `${label}: *${code}*\nTenant can pay cash at Walmart, CVS, or any Zego/PayNearMe location using this number.`;
     } catch (err) {
       return `Could not retrieve CashPay code: ${err.message}`;
+    }
+  }
+
+  if (name === 'get_recurring_charges') {
+    try {
+      return await rm.getRecurringCharges(input.community_name);
+    } catch (err) {
+      return `Could not fetch recurring charges: ${err.message}`;
     }
   }
 

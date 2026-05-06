@@ -1062,6 +1062,76 @@ async function findAllNameMatches(firstName, lastName, communityName) {
   return all;
 }
 
+async function getRecurringCharges(communityName) {
+  // Resolve community name → property IDs
+  let propIDs = [];
+  let resolvedName = communityName;
+  if (communityName) {
+    const propMap = await getPropertyMap();
+    const q     = communityName.toLowerCase().replace(/[,.']/g, '');
+    const STOP  = new Set(['community','communities','mobile','home','park','parks',
+                           'property','properties','llc','inc','corp','ltd','mhc',
+                           'the','and','of','at','in','management','realty']);
+    const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, ''))
+                   .filter(w => w.length >= 4 && !STOP.has(w));
+    const entries = [...propMap.entries()]
+      .filter(([, pn]) => {
+        const n = pn.toLowerCase();
+        return n.includes(q) || (words.length && words.every(w => n.includes(w)));
+      });
+    if (!entries.length && words.length) {
+      entries.push(...[...propMap.entries()]
+        .filter(([, pn]) => words.some(w => pn.toLowerCase().includes(w))));
+    }
+    propIDs      = entries.map(([id]) => id);
+    resolvedName = entries.length === 1 ? entries[0][1] : communityName;
+    if (!propIDs.length) {
+      const all = [...propMap.values()].filter(Boolean).sort().map(n => `• ${n}`).join('\n');
+      return `No property matching "${communityName}" found.\n\nAvailable communities:\n${all}`;
+    }
+  }
+
+  // Fetch recurring charges — try both with and without property filter
+  let charges = [];
+  for (const pid of (propIDs.length ? propIDs : [null])) {
+    try {
+      const qs   = pid ? `filters=PropertyID:eq:${pid}&pagesize=200` : 'pagesize=200';
+      const data = await rmGet(`/RecurringCharges?${qs}`);
+      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+      console.log(`[rm] RecurringCharges for prop ${pid ?? 'all'}: ${items.length} records`);
+      if (items[0]) console.log('[rm] RecurringCharge sample keys:', Object.keys(items[0]).join(', '));
+      charges = charges.concat(items);
+    } catch (err) {
+      console.log(`[rm] RecurringCharges fetch failed: ${err.message}`);
+    }
+  }
+
+  if (!charges.length) return `No recurring charges found${communityName ? ` for "${resolvedName}"` : ''}.`;
+
+  // Group by charge type/description and summarise amounts
+  const groups = new Map();
+  for (const c of charges) {
+    const desc   = c.Description || c.Name || c.ChargeType || c.Type || 'Unknown Charge';
+    const amount = c.Amount ?? c.ChargeAmount ?? c.Rate ?? null;
+    const freq   = c.Frequency || c.RecurrenceType || c.Period || null;
+    const key    = desc;
+    if (!groups.has(key)) groups.set(key, { desc, amounts: [], freq });
+    if (amount !== null) groups.get(key).amounts.push(Number(amount));
+  }
+
+  const lines = [...groups.entries()].map(([, g]) => {
+    const amounts = g.amounts;
+    if (!amounts.length) return `• ${g.desc}`;
+    const unique = [...new Set(amounts.map(a => `$${a.toFixed(2)}`))];
+    const amtStr = unique.length === 1 ? unique[0] : `$${Math.min(...amounts).toFixed(2)}–$${Math.max(...amounts).toFixed(2)}`;
+    const freq   = g.freq ? ` (${g.freq})` : '';
+    return `• ${g.desc}: ${amtStr}${freq}`;
+  });
+
+  const header = communityName ? `RECURRING CHARGES — ${resolvedName}` : 'RECURRING CHARGES (All Properties)';
+  return `${header}:\n${lines.join('\n')}`;
+}
+
 module.exports = {
   lookupTenantByPhone,
   listProperties,
@@ -1075,6 +1145,7 @@ module.exports = {
   buildAccountSummary,
   resolveTenantLocation,
   buildCallerContext,
+  getRecurringCharges,
   getTenantStatements,
   getTenantHistoryFiles,
   downloadRmFile,
