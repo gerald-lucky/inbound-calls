@@ -490,7 +490,8 @@ async function getAllUnits() {
   let all  = [];
   let page = 1;
   while (true) {
-    const data  = await rmGet(`${endpoint}?pagesize=${pagesize}&pagenumber=${page}`);
+    // Include UnitType embed so we get the type name (e.g. "Abandoned H", "Lot")
+    const data  = await rmGet(`${endpoint}?pagesize=${pagesize}&pagenumber=${page}&embeds=UnitType`);
     const items = data?.Items ?? data?.items ?? data?.Value ?? data?.value ?? (Array.isArray(data) ? data : []);
     console.log(`[rm] Units page ${page}: ${items.length} items`);
     all = all.concat(items);
@@ -607,35 +608,100 @@ async function getVacancyReport(communityName) {
     ? `VACANCY REPORT — ${communityName}`
     : 'VACANCY REPORT (All Communities)';
 
-  let occupiedCount, vacantCount, vacantList, note;
+  // Build UnitID → last-lease-end-date map from tenant cache for days-vacant calculation
+  const tenants = await getAllTenants();
+  const unitLastVacated = new Map(); // UnitID → Date
+  for (const t of tenants) {
+    for (const l of (t.Leases || [])) {
+      if (!l.UnitID || !l.EndDate) continue;
+      const end  = new Date(l.EndDate);
+      const uid  = Number(l.UnitID);
+      const prev = unitLastVacated.get(uid);
+      if (!prev || end > prev) unitLastVacated.set(uid, end);
+      for (const ul of (l.UnitLeases || [])) {
+        if (!ul.UnitID) continue;
+        const uid2 = Number(ul.UnitID);
+        const prev2 = unitLastVacated.get(uid2);
+        if (!prev2 || end > prev2) unitLastVacated.set(uid2, end);
+      }
+    }
+  }
+
+  // Helper: extract unit type name from several possible field shapes
+  function unitTypeName(u) {
+    return u.UnitType?.Name ?? u.UnitType?.UnitTypeName ?? u.UnitTypeName
+        ?? u.UnitTypeDescription ?? u.Type ?? null;
+  }
+
+  // Helper: extract rent from unit record
+  function unitRent(u) {
+    const r = u.MarketRent ?? u.Rent ?? u.RentAmount ?? u.DefaultRent ?? u.BaseRent ?? null;
+    return r !== null ? `$${Number(r).toFixed(0)}/mo` : null;
+  }
+
+  // Helper: days vacant from unit record or last-vacated map
+  function daysVacant(u) {
+    // Some RM unit records carry VacantOn / VacancyDate directly
+    const raw = u.VacantOn ?? u.VacancyDate ?? u.VacantSince ?? u.LastVacancyDate ?? null;
+    if (raw) {
+      const d = Math.floor((Date.now() - new Date(raw)) / 86400000);
+      return d >= 0 ? d : null;
+    }
+    // Fall back to last lease end date from tenant cache
+    const uid  = Number(u.UnitID);
+    const last = unitLastVacated.get(uid);
+    if (last) {
+      const d = Math.floor((Date.now() - last) / 86400000);
+      return d >= 0 ? d : null;
+    }
+    return null;
+  }
+
+  let occupiedCount, vacantCount, vacantUnits, note;
 
   if (hasUnitLevelData) {
-    // Unit-level match: we know exactly which units are occupied
-    const occupied = units.filter(isOccupied);
-    const vacant   = units.filter(u => !isOccupied(u));
-    occupiedCount  = occupied.length;
-    vacantCount    = vacant.length;
-    vacantList     = vacant.slice(0, 30).map(u => u.Name || u.UnitID).join(', ');
-    note           = '';
+    const occupied  = units.filter(isOccupied);
+    const vacant    = units.filter(u => !isOccupied(u));
+    occupiedCount   = occupied.length;
+    vacantCount     = vacant.length;
+    vacantUnits     = vacant;
+    note            = '';
   } else {
-    // Count-based fallback: use active tenant count per property
     const activeInMatched = matchedSet
       ? [...matchedSet].reduce((sum, pid) => sum + (countByProp.get(pid) || 0), 0)
       : [...countByProp.values()].reduce((a, b) => a + b, 0);
-
     occupiedCount = Math.min(activeInMatched, units.length);
     vacantCount   = units.length - occupiedCount;
-    vacantList    = '';
+    vacantUnits   = [];
     note          = '\n(Occupancy estimated from active tenant count — specific vacant unit numbers require a Rent Manager unit-assignment sync)';
   }
 
   const vacancyRate = units.length ? ((vacantCount / units.length) * 100).toFixed(1) : 0;
 
+  let vacantDetail = '';
+  if (vacantUnits.length) {
+    const rows = vacantUnits.slice(0, 30).map(u => {
+      const name    = u.Name || u.UnitNumber || String(u.UnitID);
+      const type    = unitTypeName(u) ?? '—';
+      const days    = daysVacant(u);
+      const daysStr = days !== null ? `${days} days vacant` : 'vacant';
+      const rent    = unitRent(u) ?? '—';
+      const comment = (u.Comments || u.Comment || u.Notes || '').trim();
+      const addr    = (u.Address || u.DefaultAddress || u.StreetAddress || '').trim();
+      let line = `• ${name} | Type: ${type} | ${daysStr} | Rent: ${rent}`;
+      if (addr)    line += ` | ${addr}`;
+      if (comment) line += ` | Note: ${comment}`;
+      return line;
+    });
+    vacantDetail = `\n\nVacant Units:\n${rows.join('\n')}`;
+    if (vacantCount > 30) vacantDetail += `\n  ... and ${vacantCount - 30} more`;
+  }
+
   return `${header}:
 Total Units: ${units.length}
 Occupied: ${occupiedCount}
 Vacant: ${vacantCount}
-Vacancy Rate: ${vacancyRate}%${note}${vacantList ? `\n\nVacant Units: ${vacantList}${vacantCount > 30 ? ` ... and ${vacantCount - 30} more` : ''}` : ''}`;
+Vacancy Rate: ${vacancyRate}%${note}${vacantDetail}`;
 }
 
 
