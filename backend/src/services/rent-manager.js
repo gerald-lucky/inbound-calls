@@ -580,7 +580,8 @@ async function buildOccupancyMap() {
       countByProp.set(pid, (countByProp.get(pid) || 0) + 1);
 
       for (const l of (t.Leases || [])) {
-        const leaseActive = !l.EndDate || new Date(l.EndDate) > now;
+        // RM leases use MoveOutDate, not EndDate
+        const leaseActive = !l.MoveOutDate || new Date(l.MoveOutDate) > now;
         if (leaseActive && l.UnitID) byID.add(Number(l.UnitID));
         for (const ul of (l.UnitLeases || [])) {
           if (ul.UnitID) byID.add(Number(ul.UnitID));
@@ -843,10 +844,10 @@ async function resolveTenantLocation(tenant) {
   try {
     const [allUnits, propMap] = await Promise.all([getAllUnits(), getPropertyMap()]);
 
-    // Pick the active lease (no end date or end date in future); fall back to first
+    // Pick the active lease — RM uses MoveOutDate, not EndDate
     const now         = new Date();
     const activeLease = (tenant.Leases || []).find(l =>
-      !l.EndDate || new Date(l.EndDate) > now
+      !l.MoveOutDate || new Date(l.MoveOutDate) > now
     ) ?? tenant.Leases?.[0] ?? null;
 
     const unitId = activeLease?.UnitID
@@ -937,7 +938,7 @@ Do not make up any account figures until you find their record.`;
 
 async function getTenantStatements(tenantId, limit = 5) {
   try {
-    const data  = await rmGet(`/AccountStatements?filters=AccountID:eq:${tenantId}&pagesize=${limit}`);
+    const data  = await rmGet(`/AccountStatements?TenantID=${tenantId}&pagesize=${limit}`);
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     console.log(`[rm] AccountStatements for tenant ${tenantId}: ${items.length} records`);
     if (items[0]) console.log('[rm] Statement sample keys:', Object.keys(items[0]).join(', '));
@@ -951,7 +952,7 @@ async function getTenantStatements(tenantId, limit = 5) {
 async function getTenantHistoryFiles(tenantId, limit = 10) {
   try {
     const data  = await rmGet(
-      `/HistoryNotes?filters=ParentID:eq:${tenantId},EntityType:eq:Tenant&embeds=HistoryAttachments,Attachment&pagesize=${limit}`
+      `/HistoryNotes?TenantID=${tenantId}&embeds=HistoryAttachments,Attachment&pagesize=${limit}`
     );
     const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
     const withFiles = items.filter(h =>
@@ -1095,7 +1096,7 @@ async function getRecurringCharges(communityName) {
   let charges = [];
   for (const pid of (propIDs.length ? propIDs : [null])) {
     try {
-      const qs   = pid ? `filters=PropertyID:eq:${pid}&pagesize=200` : 'pagesize=200';
+      const qs   = pid ? `PropertyID=${pid}&pagesize=200` : 'pagesize=200';
       const data = await rmGet(`/RecurringCharges?${qs}`);
       const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
       console.log(`[rm] RecurringCharges for prop ${pid ?? 'all'}: ${items.length} records`);
