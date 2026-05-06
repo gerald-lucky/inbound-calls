@@ -402,45 +402,27 @@ async function lookupTenantByUnit(unitNumber, communityName) {
 
 async function getPaymentHistory(tenantId, limit = 8) {
   try {
-    const pageSize = 100;
+    // RM returns transactions oldest-first with no reliable server-side sort.
+    // Paginate forward until the last page (fewer records than pageSize), then
+    // sort the full set newest-first. For most tenants this is 1 request (≤200 tx).
+    const pageSize = 200;
+    let all  = [];
+    let page = 1;
 
-    // Page 1 — also tells us the total record count
-    const page1  = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${pageSize}&pagenumber=1`);
-    const items1 = page1?.Items ?? page1?.items ?? (Array.isArray(page1) ? page1 : []);
-    const total  = page1?.TotalCount ?? page1?.totalCount ?? page1?.TotalRecords
-                ?? page1?.RecordCount ?? page1?.Total ?? items1.length;
-    if (items1[0]) console.log(`[rm] Transaction keys:`, Object.keys(items1[0]).join(', '));
-    console.log(`[rm] Transactions: ${items1.length} fetched, ${total} total for tenant ${tenantId}`);
-
-    let all = [...items1];
-
-    // RM returns records oldest-first. For tenants with many transactions (172+ seen in
-    // production) page 1 only covers old records. Fetch the last page(s) to get recent ones.
-    if (total > pageSize) {
-      const lastPage = Math.ceil(total / pageSize);
-      const fetchPages = new Set([lastPage]);
-      if (lastPage > 1) fetchPages.add(lastPage - 1); // grab prev page for buffer
-
-      for (const p of fetchPages) {
-        if (p === 1) continue; // already fetched
-        try {
-          const d = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${pageSize}&pagenumber=${p}`);
-          const items = d?.Items ?? d?.items ?? (Array.isArray(d) ? d : []);
-          all = all.concat(items);
-        } catch { /* skip failed pages */ }
-      }
+    while (page <= 15) {
+      const data  = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${pageSize}&pagenumber=${page}`);
+      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+      if (page === 1 && items[0]) console.log(`[rm] Transaction keys:`, Object.keys(items[0]).join(', '));
+      all = all.concat(items);
+      if (items.length < pageSize) break; // last page
+      page++;
     }
 
-    // Deduplicate by a stable key, sort newest-first, return top limit
-    const seen = new Set();
-    const deduped = all.filter(t => {
-      const key = `${t.TransactionDate}-${t.Amount}-${t.Description}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return !!t.TransactionDate;
-    });
-    deduped.sort((a, b) => new Date(b.TransactionDate) - new Date(a.TransactionDate));
-    return deduped.slice(0, limit);
+    console.log(`[rm] Transactions: ${all.length} fetched across ${page} page(s) for tenant ${tenantId}`);
+    return all
+      .filter(t => t.TransactionDate)
+      .sort((a, b) => new Date(b.TransactionDate) - new Date(a.TransactionDate))
+      .slice(0, limit);
   } catch (err) {
     console.error('[rm] getPaymentHistory:', err.message);
     return [];
