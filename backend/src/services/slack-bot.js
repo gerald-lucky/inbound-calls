@@ -276,13 +276,31 @@ async function processSlackMessage(userText, threadTs, prefetchedHistory = null,
   const messages = [...history, { role: 'user', content: userText }];
 
   for (let turn = 0; turn < 5; turn++) {
-    const response = await anthropic.messages.create({
-      model:      MODEL,
-      max_tokens: 1024,
-      tools:      TOOLS,
-      system:     SYSTEM_PROMPT,
-      messages,
-    });
+    let response;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        response = await anthropic.messages.create({
+          model:      MODEL,
+          max_tokens: 1024,
+          tools:      TOOLS,
+          system:     SYSTEM_PROMPT,
+          messages,
+        });
+        break; // success
+      } catch (err) {
+        const status = err.status ?? err.statusCode ?? 0;
+        const isOverloaded = status === 529 || status === 529 ||
+          (err.message || '').toLowerCase().includes('overloaded');
+        const isRateLimit  = status === 429;
+        if ((isOverloaded || isRateLimit) && attempt < 3) {
+          const wait = [5000, 15000, 30000][attempt];
+          console.warn(`[slack-bot] Anthropic ${status} on attempt ${attempt + 1}, retrying in ${wait / 1000}s`);
+          await new Promise(r => setTimeout(r, wait));
+          continue;
+        }
+        throw err;
+      }
+    }
 
     messages.push({ role: 'assistant', content: response.content });
 
