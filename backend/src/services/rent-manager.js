@@ -761,29 +761,60 @@ Vacancy Rate: ${vacancyRate}%${note}${vacantDetail}`;
 
 
 async function getCashPayCode(tenantId) {
-  // 1. Official endpoint confirmed by RM support
-  try {
-    const data = await rmGet(`/Tenants/${tenantId}/CashPayUser`);
-    console.log(`[rm] CashPayUser response:`, JSON.stringify(data));
-    const code = data?.AccountNumber ?? data?.BarcodeNumber ?? data?.Code ?? data?.CashPayAccountNumber ?? null;
-    if (code) {
-      console.log(`[rm] CashPay: found via /CashPayUser for tenant ${tenantId}`);
-      return { code: String(code), source: 'existing' };
+  // Extract an account number from whatever shape RM returns
+  function extractCode(data) {
+    if (!data) return null;
+    // RM may wrap the result in a sub-object or return an array
+    const candidates = Array.isArray(data)
+      ? data
+      : [data, data?.CashPayUser, data?.User, data?.Result, data?.Data].filter(Boolean);
+    for (const obj of candidates) {
+      if (typeof obj !== 'object') continue;
+      const code = obj.AccountNumber   ?? obj.BarcodeNumber  ?? obj.Code
+                ?? obj.CashPayAccountNumber ?? obj.Number    ?? obj.PaymentCode
+                ?? obj.Barcode         ?? obj.BarCode        ?? obj.UserID
+                ?? obj.ExternalID      ?? obj.ZegoID         ?? obj.PayNearMeID
+                ?? obj.CashPayID       ?? null;
+      if (code) return String(code);
     }
-  } catch (err) {
-    console.log(`[rm] CashPay GET /CashPayUser: ${err.message}`);
+    return null;
   }
 
-  // 2. POST to generate a new code only if no existing code found
-  console.log(`[rm] CashPay: generating new code via POST for tenant ${tenantId}`);
+  // 1. GET existing CashPay user (confirmed endpoint per RM support)
   try {
-    const data = await rmPost(`/tenants/${tenantId}/cashpaybarcodes`, { LocationID: LOC_ID });
-    const code  = data?.BarcodeNumber ?? data?.AccountNumber ?? data?.Code ?? null;
-    return { code: code ? String(code) : null, source: 'generated', raw: data };
+    const data = await rmGet(`/Tenants/${tenantId}/CashPayUser`);
+    console.log(`[rm] CashPayUser GET response:`, JSON.stringify(data));
+    const code = extractCode(data);
+    if (code) {
+      console.log(`[rm] CashPay: found via GET /CashPayUser → "${code}"`);
+      return { code, source: 'existing' };
+    }
+    console.log(`[rm] CashPayUser GET returned data but no code field found`);
   } catch (err) {
-    console.log(`[rm] CashPay POST also failed: ${err.message}`);
-    return { code: null, source: 'none', raw: { error: err.message } };
+    console.log(`[rm] CashPay GET /CashPayUser failed (${err.message})`);
   }
+
+  // 2. Try POST to create/register CashPay user (creates account if not yet set up)
+  const postAttempts = [
+    { url: `/Tenants/${tenantId}/CashPayUser`,         body: { LocationID: LOC_ID } },
+    { url: `/tenants/${tenantId}/cashpaybarcodes`,      body: { LocationID: LOC_ID } },
+    { url: `/CashPayBarcodes`,                          body: { TenantID: tenantId, LocationID: LOC_ID } },
+  ];
+  for (const { url, body } of postAttempts) {
+    try {
+      const data = await rmPost(url, body);
+      console.log(`[rm] CashPay POST ${url} response:`, JSON.stringify(data));
+      const code = extractCode(data);
+      if (code) {
+        console.log(`[rm] CashPay: generated via POST ${url} → "${code}"`);
+        return { code, source: 'generated', raw: data };
+      }
+    } catch (err) {
+      console.log(`[rm] CashPay POST ${url} failed (${err.message})`);
+    }
+  }
+
+  return { code: null, source: 'none', raw: null };
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
