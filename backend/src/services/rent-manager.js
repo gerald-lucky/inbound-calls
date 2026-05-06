@@ -401,28 +401,73 @@ async function lookupTenantByUnit(unitNumber, communityName) {
 // ── Payment history ───────────────────────────────────────────────────────────
 
 async function getPaymentHistory(tenantId, limit = 8) {
-  try {
-    // RM returns transactions oldest-first with no reliable server-side sort.
-    // Paginate forward until the last page (fewer records than pageSize), then
-    // sort the full set newest-first. For most tenants this is 1 request (≤200 tx).
-    const pageSize = 200;
-    let all  = [];
-    let page = 1;
+  const base = `/tenants/${tenantId}/Transactions`;
 
-    while (page <= 15) {
-      const data  = await rmGet(`/tenants/${tenantId}/Transactions?pagesize=${pageSize}&pagenumber=${page}`);
-      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
-      if (page === 1 && items[0]) console.log(`[rm] Transaction keys:`, Object.keys(items[0]).join(', '));
-      all = all.concat(items);
-      if (items.length < pageSize) break; // last page
-      page++;
+  const fetchPage = async (qs) => {
+    const data  = await rmGet(`${base}?${qs}`);
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    return { items, data };
+  };
+
+  const newestFirst = (arr) =>
+    arr
+      .filter(t => t.TransactionDate)
+      .sort((a, b) => new Date(b.TransactionDate) - new Date(a.TransactionDate));
+
+  try {
+    // ── Strategy 1: server-side sort (1 small request if RM honours it) ───────
+    // Try several format variants — verify the result is actually descending.
+    const sortVariants = [
+      `pagesize=${limit + 10}&orderby=TransactionDate:desc`,
+      `pagesize=${limit + 10}&$orderby=TransactionDate+desc`,
+      `pagesize=${limit + 10}&sortby=TransactionDate&sortdirection=Desc`,
+    ];
+    for (const qs of sortVariants) {
+      try {
+        const { items } = await fetchPage(qs);
+        if (items.length >= 2) {
+          const d0 = new Date(items[0].TransactionDate);
+          const dN = new Date(items[items.length - 1].TransactionDate);
+          if (!isNaN(d0) && !isNaN(dN) && d0 >= dN) {
+            console.log(`[rm] Transactions: server sort worked (${qs.split('&').slice(-1)[0]})`);
+            return newestFirst(items).slice(0, limit);
+          }
+        }
+      } catch { /* try next variant */ }
     }
 
-    console.log(`[rm] Transactions: ${all.length} fetched across ${page} page(s) for tenant ${tenantId}`);
-    return all
-      .filter(t => t.TransactionDate)
-      .sort((a, b) => new Date(b.TransactionDate) - new Date(a.TransactionDate))
-      .slice(0, limit);
+    // ── Strategy 2: probe for total count, jump directly to last page ─────────
+    const { items: probe, data: probeData } = await fetchPage('pagesize=1&pagenumber=1');
+    if (probe[0]) console.log(`[rm] Transaction keys:`, Object.keys(probe[0]).join(', '));
+    if (probeData && !Array.isArray(probeData))
+      console.log(`[rm] Transaction response keys:`, Object.keys(probeData).join(', '));
+
+    const total = probeData?.TotalCount ?? probeData?.totalCount ?? probeData?.TotalRecords
+               ?? probeData?.RecordCount ?? probeData?.Total ?? probeData?.TotalItems ?? null;
+    console.log(`[rm] Transactions: total hint = ${total} for tenant ${tenantId}`);
+
+    if (total && Number(total) > 1) {
+      const ps       = Math.max(limit * 4, 40);
+      const lastPage = Math.ceil(Number(total) / ps);
+      const pages    = [lastPage, lastPage > 1 ? lastPage - 1 : null].filter(Boolean);
+      const chunks   = await Promise.all(
+        pages.map(p => fetchPage(`pagesize=${ps}&pagenumber=${p}`).then(r => r.items).catch(() => []))
+      );
+      return newestFirst(chunks.flat()).slice(0, limit);
+    }
+
+    // ── Strategy 3: paginate forward with no cap — stop at the natural last page
+    const pageSize = 200;
+    let all = [], page = 1;
+    while (true) {
+      const { items } = await fetchPage(`pagesize=${pageSize}&pagenumber=${page}`);
+      all = all.concat(items);
+      if (items.length < pageSize) break; // RM returned a partial page → we're done
+      page++;
+    }
+    console.log(`[rm] Transactions: ${all.length} fetched (${page} pages) for tenant ${tenantId}`);
+    return newestFirst(all).slice(0, limit);
+
   } catch (err) {
     console.error('[rm] getPaymentHistory:', err.message);
     return [];
