@@ -51,7 +51,7 @@ const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        tenant_id: { type: 'number', description: "Resident's Rent Manager TenantID" },
+        tenant_id: { type: 'number', description: "Resident's internal TenantID (the 'TenantID (use for tools)' field in the account summary — NOT the display Account#)" },
       },
       required: ['tenant_id'],
     },
@@ -62,7 +62,7 @@ const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        tenant_id: { type: 'number', description: "Resident's Rent Manager TenantID" },
+        tenant_id: { type: 'number', description: "Resident's internal TenantID (the 'TenantID (use for tools)' field in the account summary — NOT the display Account#)" },
       },
       required: ['tenant_id'],
     },
@@ -90,7 +90,7 @@ const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        tenant_id: { type: 'number', description: "Resident's Rent Manager TenantID" },
+        tenant_id: { type: 'number', description: "Resident's internal TenantID (the 'TenantID (use for tools)' field — NOT the display Account#)" },
       },
       required: ['tenant_id'],
     },

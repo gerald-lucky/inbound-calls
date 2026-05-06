@@ -901,7 +901,8 @@ function buildAccountSummary(tenant, payments = [], location = null) {
 
   return `RESIDENT ACCOUNT (Rent Manager):
 Name: ${name}
-Account#: ${displayId}
+Account# (display): ${displayId}
+TenantID (use for tools): ${tenant.TenantID}
 Community: ${communityName}
 Unit: ${unit}
 Balance Due: $${Number(balance).toFixed(2)}
