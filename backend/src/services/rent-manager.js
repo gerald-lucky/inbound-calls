@@ -949,6 +949,20 @@ async function getTenantStatements(tenantId, limit = 5) {
   }
 }
 
+async function getTenantContacts(tenantId) {
+  try {
+    const data = await rmGet(`/tenants/${tenantId}?embeds=Contacts`);
+    if (!data) return [];
+    const contacts = data?.Contacts ?? data?.contacts ?? [];
+    console.log(`[rm] Contacts for tenant ${tenantId}: ${contacts.length}`);
+    if (contacts[0]) console.log('[rm] Contact sample keys:', Object.keys(contacts[0]).join(', '));
+    return contacts;
+  } catch (err) {
+    console.error('[rm] getTenantContacts:', err.message);
+    return [];
+  }
+}
+
 async function getHistoryNotes(tenantId, limit = 20) {
   try {
     const data  = await rmGet(
@@ -1162,6 +1176,7 @@ module.exports = {
   resolveTenantLocation,
   buildCallerContext,
   getRecurringCharges,
+  getTenantContacts,
   getHistoryNotes,
   getTenantStatements,
   getTenantHistoryFiles,

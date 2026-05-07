@@ -11,7 +11,7 @@ const SYSTEM_PROMPT = `You are Britney, an AI property management assistant for 
 IMPORTANT CONTEXT: You are in STAFF MODE — you are chatting with a Lucky Community teammate via Slack, NOT with a tenant. Teammates can ask about any resident by name, unit number, or account.
 
 You have live access to Rent Manager and can:
-- Look up any resident's account, balance, and unit info
+- Look up any resident's account, balance, unit info, and contact details (phone numbers, emails, co-applicants)
 - Pull payment history for disputes or clarifications
 - Generate CashPay codes (Zego) so a tenant can pay cash at Walmart
 - Provide a tenant's TWA account number and URL for portal/auto-pay setup
@@ -92,6 +92,19 @@ const TOOLS = [
       properties: {
         community_name: { type: 'string', description: 'Community or property name to filter by (e.g. "Country Estates", "Rainbow Terrace"). Omit to get all properties.' },
       },
+    },
+  },
+  {
+    name: 'get_contact_info',
+    description:
+      'Get all phone numbers and email addresses for a tenant, including co-applicants, spouses, and occupants on the account. ' +
+      'Use this whenever a staff member asks for a phone number or contact info.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tenant_id: { type: 'number', description: "Resident's internal TenantID (the 'TenantID (use for tools)' field — NOT the display Account#)" },
+      },
+      required: ['tenant_id'],
     },
   },
   {
@@ -223,6 +236,32 @@ async function executeTool(name, input, slackContext = null) {
       return await rm.getVacancyReport(input.community_name);
     } catch (err) {
       return `Could not fetch vacancy report: ${err.message}`;
+    }
+  }
+
+  if (name === 'get_contact_info') {
+    try {
+      const contacts = await rm.getTenantContacts(input.tenant_id);
+      if (!contacts.length) return 'No contact records found for this tenant.';
+
+      const lines = contacts.map(c => {
+        const name  = [c.FirstName, c.MiddleName, c.LastName].filter(Boolean).join(' ');
+        const role  = c.ApplicantType || (c.ContactTypeID === -1 ? 'Primary' : null) || `Contact #${c.ContactID}`;
+        const email = (c.Email || '').trim();
+        const phones = (c.PhoneNumbers || []).map(p => {
+          const primary  = p.IsPrimary ? ' (primary)' : '';
+          const textable = p.IsTextReady ? ' 📱' : '';
+          return `    • ${p.PhoneNumber}${primary}${textable}`;
+        });
+        const parts = [`**${name}** — ${role}`];
+        if (phones.length) parts.push(...phones);
+        if (email) parts.push(`    • Email: ${email}`);
+        return parts.join('\n');
+      });
+
+      return `CONTACTS & PHONE NUMBERS:\n${lines.join('\n')}`;
+    } catch (err) {
+      return `Could not fetch contact info: ${err.message}`;
     }
   }
 
