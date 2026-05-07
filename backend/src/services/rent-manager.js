@@ -951,11 +951,36 @@ async function getTenantStatements(tenantId, limit = 5) {
 
 async function getTenantContacts(tenantId) {
   try {
-    const data = await rmGet(`/tenants/${tenantId}?embeds=Contacts`);
-    if (!data) return [];
-    const contacts = data?.Contacts ?? data?.contacts ?? [];
-    console.log(`[rm] Contacts for tenant ${tenantId}: ${contacts.length}`);
-    if (contacts[0]) console.log('[rm] Contact sample keys:', Object.keys(contacts[0]).join(', '));
+    // Try dedicated /Contacts endpoint first — it supports embeds=PhoneNumbers natively
+    let contacts = [];
+    try {
+      const data = await rmGet(`/Contacts?TenantID=${tenantId}&embeds=PhoneNumbers&pagesize=50`);
+      const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+      if (items.length) {
+        contacts = items;
+        console.log(`[rm] Contacts via /Contacts endpoint for tenant ${tenantId}: ${contacts.length}`);
+        if (contacts[0]) console.log('[rm] Contact keys:', Object.keys(contacts[0]).join(', '));
+        if (contacts[0]?.PhoneNumbers?.[0]) console.log('[rm] PhoneNumber keys:', Object.keys(contacts[0].PhoneNumbers[0]).join(', '));
+        return contacts;
+      }
+    } catch (e) {
+      console.log('[rm] /Contacts endpoint failed, falling back to tenant embed:', e.message);
+    }
+
+    // Fallback: try nested embeds on the tenant record
+    for (const embedStr of ['Contacts,Contacts.PhoneNumbers', 'Contacts,PhoneNumbers', 'Contacts']) {
+      try {
+        const data = await rmGet(`/tenants/${tenantId}?embeds=${embedStr}`);
+        if (!data) continue;
+        contacts = data?.Contacts ?? data?.contacts ?? [];
+        if (contacts.length) {
+          console.log(`[rm] Contacts via embed "${embedStr}" for tenant ${tenantId}: ${contacts.length}`);
+          if (contacts[0]) console.log('[rm] Contact keys:', Object.keys(contacts[0]).join(', '));
+          const hasPhones = contacts.some(c => (c.PhoneNumbers || []).length > 0);
+          if (hasPhones || embedStr === 'Contacts') return contacts;
+        }
+      } catch { /* try next */ }
+    }
     return contacts;
   } catch (err) {
     console.error('[rm] getTenantContacts:', err.message);
