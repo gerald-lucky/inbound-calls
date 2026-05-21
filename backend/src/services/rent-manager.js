@@ -1399,6 +1399,8 @@ async function getServiceIssues(communityName, unitNumber, status = 'open', issu
     return `No${statusStr} service issues found${unitStr}${communityName ? ` at "${resolvedName}"` : ''}.`;
   }
 
+  const fmt = d => { try { return new Date(d).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); } catch { return d; } };
+
   const lines = issues.map(i => {
     const id       = i.ServiceIssueID || i.WorkOrderID || i.ID || '?';
     const subject  = i.Subject || i.Description || i.Title || i.Name || `Issue #${id}`;
@@ -1408,6 +1410,8 @@ async function getServiceIssues(communityName, unitNumber, status = 'open', issu
     const unit     = i.UnitNumber || i.LotNumber || i.Unit || '';
     const assigned = i.AssignedTo || i.AssignedTechnician || i.AssigneeName || '';
     const created  = i.CreatedDate || i.OpenDate || i.ServiceDate || i.DateCreated || '';
+    const closed   = i.ClosedDate || i.CompletedDate || i.ResolvedDate || '';
+    const notes    = i.ClosingNotes || i.ResolutionNotes || i.Resolution || i.Notes || '';
     const propName = i.PropertyID ? (propMap.get(Number(i.PropertyID)) || '') : '';
 
     const meta = [
@@ -1417,7 +1421,9 @@ async function getServiceIssues(communityName, unitNumber, status = 'open', issu
       unit      && `Unit/Lot: ${unit}`,
       propName  && `Community: ${propName}`,
       assigned  && `Assigned to: ${assigned}`,
-      created   && `Opened: ${new Date(created).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })}`,
+      created   && `Opened: ${fmt(created)}`,
+      closed    && `Closed: ${fmt(closed)}`,
+      notes     && `Resolution: ${notes}`,
     ].filter(Boolean);
 
     return [`**#${id} — ${subject}**`, ...meta.map(m => `  ${m}`)].join('\n');

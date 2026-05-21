@@ -118,8 +118,10 @@ const TOOLS = [
     name: 'get_service_issues',
     description:
       'Look up service tickets / work orders in Rent Manager. ' +
-      'Use when staff ask about open maintenance requests, repairs, service tickets, or the resolution/details of a specific issue. ' +
-      'Can look up a specific issue by ID number, or filter by community, lot/unit, and status.',
+      'Use when staff ask about maintenance requests, repairs, service tickets, or the resolution/details of a specific issue. ' +
+      'Can look up by ID number, or filter by community, lot/unit, and status. ' +
+      'Default is to show ALL tickets (open and closed) so staff can see full history and resolutions. ' +
+      'Only pass status="open" if the user explicitly asks only about open tickets.',
     input_schema: {
       type: 'object',
       properties: {
@@ -138,7 +140,7 @@ const TOOLS = [
         status: {
           type: 'string',
           enum: ['open', 'closed', 'all'],
-          description: 'Filter by status: "open" (default), "closed", or "all". Ignored when issue_id is provided.',
+          description: 'Filter by status: "all" (default — shows open and closed), "open", or "closed". Ignored when issue_id is provided.',
         },
       },
     },
@@ -293,7 +295,7 @@ async function executeTool(name, input, slackContext = null) {
 
   if (name === 'get_service_issues') {
     try {
-      return await rm.getServiceIssues(input.community_name, input.unit_number, input.status ?? 'open', input.issue_id ?? null);
+      return await rm.getServiceIssues(input.community_name, input.unit_number, input.status ?? 'all', input.issue_id ?? null);
     } catch (err) {
       return `Could not fetch service issues: ${err.message}`;
     }
