@@ -1261,8 +1261,60 @@ async function getVendors(communityName) {
   return `${header}:\n\n${lines.join('\n\n')}`;
 }
 
-async function getServiceIssues(communityName, unitNumber, status = 'open') {
+async function getServiceIssues(communityName, unitNumber, status = 'open', issueId = null) {
   const propMap = await getPropertyMap();
+
+  // Direct lookup by ID — fetch the single record
+  if (issueId) {
+    for (const ep of ['/ServiceIssues', '/WorkOrders']) {
+      try {
+        const data = await rmGet(`${ep}/${issueId}?embeds=ServiceIssueHistory`);
+        if (!data) continue;
+        console.log(`[rm] Issue ${issueId} keys:`, Object.keys(data).join(', '));
+        const id       = data.ServiceIssueID || data.WorkOrderID || data.ID || issueId;
+        const subject  = data.Subject || data.Description || data.Title || data.Name || `Issue #${id}`;
+        const st       = data.Status || data.ServiceIssueStatus || data.StatusName || '';
+        const priority = data.Priority || data.PriorityName || '';
+        const category = data.Category || data.IssueType || data.WorkOrderType || '';
+        const unit     = data.UnitNumber || data.LotNumber || data.Unit || '';
+        const assigned = data.AssignedTo || data.AssignedTechnician || data.AssigneeName || '';
+        const created  = data.CreatedDate || data.OpenDate || data.ServiceDate || data.DateCreated || '';
+        const closed   = data.ClosedDate || data.CompletedDate || data.ResolvedDate || '';
+        const notes    = data.ClosingNotes || data.ResolutionNotes || data.Notes || data.Description || '';
+        const propName = data.PropertyID ? (propMap.get(Number(data.PropertyID)) || '') : '';
+
+        // Pull resolution from history entries if no top-level notes
+        const history  = data.ServiceIssueHistory || data.WorkOrderHistory || [];
+        const histLines = history.slice(-5).map(h => {
+          const d    = h.Date || h.CreatedDate || '';
+          const by   = h.CreatedByName || h.User || '';
+          const msg  = h.Note || h.Comment || h.Description || '';
+          const ds   = d ? new Date(d).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '';
+          return `  [${ds}${by ? ' — ' + by : ''}] ${msg}`;
+        }).filter(l => l.trim().length > 10);
+
+        const meta = [
+          st        && `Status: ${st}`,
+          priority  && `Priority: ${priority}`,
+          category  && `Category: ${category}`,
+          unit      && `Unit/Lot: ${unit}`,
+          propName  && `Community: ${propName}`,
+          assigned  && `Assigned to: ${assigned}`,
+          created   && `Opened: ${new Date(created).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })}`,
+          closed    && `Closed: ${new Date(closed).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })}`,
+          notes     && `Resolution/Notes: ${notes}`,
+        ].filter(Boolean);
+
+        const parts = [`**Issue #${id} — ${subject}**`, ...meta.map(m => `  ${m}`)];
+        if (histLines.length) parts.push(`  Recent activity:\n${histLines.join('\n')}`);
+        return parts.join('\n');
+      } catch (err) {
+        console.log(`[rm] ${ep}/${issueId} failed: ${err.message}`);
+      }
+    }
+    return `Could not find service issue #${issueId}.`;
+  }
+
   let propIDs = [];
   let resolvedName = communityName;
 
