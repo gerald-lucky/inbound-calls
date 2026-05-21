@@ -95,6 +95,26 @@ const TOOLS = [
     },
   },
   {
+    name: 'get_vendors',
+    description:
+      'List vendors (contractors, service providers) configured in Rent Manager. ' +
+      'Use when staff ask who the plumber, electrician, landscaper, or any contractor is for a community. ' +
+      'Optionally filter by community name and/or service category.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        community_name: {
+          type: 'string',
+          description: 'Community or property name to filter vendors by (e.g. "Country Estates", "Rainbow Terrace"). Omit to list all vendors.',
+        },
+        category: {
+          type: 'string',
+          description: 'Service type keyword to filter by (e.g. "plumber", "electrical", "landscaping"). Applied client-side on the results.',
+        },
+      },
+    },
+  },
+  {
     name: 'get_contact_info',
     description:
       'Get all phone numbers and email addresses for a tenant, including co-applicants, spouses, and occupants on the account. ' +
@@ -221,6 +241,24 @@ async function executeTool(name, input, slackContext = null) {
       return await rm.getRecurringCharges(input.community_name);
     } catch (err) {
       return `Could not fetch recurring charges: ${err.message}`;
+    }
+  }
+
+  if (name === 'get_vendors') {
+    try {
+      let result = await rm.getVendors(input.community_name);
+      if (input.category && result && !result.startsWith('No ') && !result.startsWith('Could not') && !result.startsWith('No property')) {
+        const cat      = input.category.toLowerCase();
+        const blocks   = result.split('\n\n');
+        const header   = blocks[0];
+        const filtered = blocks.slice(1).filter(b => b.toLowerCase().includes(cat));
+        result = filtered.length
+          ? `${header}\n\n${filtered.join('\n\n')}`
+          : `No vendors matching category "${input.category}" found.`;
+      }
+      return result;
+    } catch (err) {
+      return `Could not fetch vendors: ${err.message}`;
     }
   }
 

@@ -1187,6 +1187,80 @@ async function getRecurringCharges(communityName) {
   return `${header}:\n${lines.join('\n')}`;
 }
 
+async function getVendors(communityName) {
+  const propMap = await getPropertyMap();
+  let propIDs = [];
+  let resolvedName = communityName;
+
+  if (communityName) {
+    const q    = communityName.toLowerCase().replace(/[,.']/g, '');
+    const STOP = new Set(['community','communities','mobile','home','park','parks',
+                          'property','properties','llc','inc','corp','ltd','mhc',
+                          'the','and','of','at','in','management','realty']);
+    const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, ''))
+                   .filter(w => w.length >= 3 && !STOP.has(w));
+    const entries = [...propMap.entries()]
+      .filter(([, pn]) => {
+        const n = pn.toLowerCase();
+        return n.includes(q) || (words.length && words.every(w => n.includes(w)));
+      });
+    if (!entries.length && words.length) {
+      entries.push(...[...propMap.entries()]
+        .filter(([, pn]) => words.some(w => pn.toLowerCase().includes(w))));
+    }
+    propIDs      = entries.map(([id]) => id);
+    resolvedName = entries.length === 1 ? entries[0][1] : communityName;
+    if (!propIDs.length) {
+      const all = [...propMap.values()].filter(Boolean).sort().map(n => `• ${n}`).join('\n');
+      return `No property matching "${communityName}" found.\n\nAvailable communities:\n${all}`;
+    }
+  }
+
+  let vendors = [];
+  try {
+    const data  = await rmGet('/Vendors?embeds=PhoneNumbers&pagesize=200');
+    const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+    vendors = items;
+    console.log(`[rm] Vendors fetched: ${vendors.length}`);
+    if (vendors[0]) console.log('[rm] Vendor sample keys:', Object.keys(vendors[0]).join(', '));
+    if (vendors[0]?.PhoneNumbers?.[0]) console.log('[rm] VendorPhone keys:', Object.keys(vendors[0].PhoneNumbers[0]).join(', '));
+  } catch (err) {
+    console.error('[rm] getVendors:', err.message);
+    return `Could not fetch vendors: ${err.message}`;
+  }
+
+  // Filter by property if requested
+  if (propIDs.length) {
+    vendors = vendors.filter(v => {
+      const vp = v.PropertyID ?? v.propertyID;
+      return vp != null && propIDs.includes(Number(vp));
+    });
+  }
+
+  if (!vendors.length) {
+    return communityName
+      ? `No vendors found assigned to "${resolvedName}".`
+      : 'No vendors found in Rent Manager.';
+  }
+
+  const lines = vendors.map(v => {
+    const name     = v.Name || v.VendorName || `Vendor #${v.VendorID}`;
+    const category = v.ServiceType || v.VendorType || v.Category || v.Type || '';
+    const email    = (v.Email || '').trim();
+    const propName = v.PropertyID ? (propMap.get(Number(v.PropertyID)) || '') : '';
+    const phones   = (v.PhoneNumbers || []).map(p =>
+      `  • ${p.PhoneNumber}${p.IsPrimary ? ' (primary)' : ''}${p.Description ? ` [${p.Description}]` : ''}`
+    );
+    const parts = [`**${name}**${category ? ` — ${category}` : ''}${propName ? ` | ${propName}` : ''}`];
+    if (phones.length) parts.push(...phones);
+    if (email) parts.push(`  • Email: ${email}`);
+    return parts.join('\n');
+  });
+
+  const header = communityName ? `VENDORS — ${resolvedName} (${vendors.length})` : `ALL VENDORS (${vendors.length})`;
+  return `${header}:\n\n${lines.join('\n\n')}`;
+}
+
 module.exports = {
   lookupTenantByPhone,
   listProperties,
@@ -1201,6 +1275,7 @@ module.exports = {
   resolveTenantLocation,
   buildCallerContext,
   getRecurringCharges,
+  getVendors,
   getTenantContacts,
   getHistoryNotes,
   getTenantStatements,
