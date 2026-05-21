@@ -115,6 +115,31 @@ const TOOLS = [
     },
   },
   {
+    name: 'get_service_issues',
+    description:
+      'Look up service tickets / work orders in Rent Manager. ' +
+      'Use when staff ask about open maintenance requests, repairs, or service tickets for a community or specific lot/unit. ' +
+      'Can filter by community, lot number, and status (open/closed/all). Defaults to open tickets only.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        community_name: {
+          type: 'string',
+          description: 'Community or property name (e.g. "Messer", "Country Estates"). Omit to search all communities.',
+        },
+        unit_number: {
+          type: 'string',
+          description: 'Lot or unit number to filter by (e.g. "25", "Lot 25", "42B"). Omit to return all units.',
+        },
+        status: {
+          type: 'string',
+          enum: ['open', 'closed', 'all'],
+          description: 'Filter by status: "open" (default), "closed", or "all".',
+        },
+      },
+    },
+  },
+  {
     name: 'get_contact_info',
     description:
       'Get all phone numbers and email addresses for a tenant, including co-applicants, spouses, and occupants on the account. ' +
@@ -259,6 +284,14 @@ async function executeTool(name, input, slackContext = null) {
       return result;
     } catch (err) {
       return `Could not fetch vendors: ${err.message}`;
+    }
+  }
+
+  if (name === 'get_service_issues') {
+    try {
+      return await rm.getServiceIssues(input.community_name, input.unit_number, input.status ?? 'open');
+    } catch (err) {
+      return `Could not fetch service issues: ${err.message}`;
     }
   }
 

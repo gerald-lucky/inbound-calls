@@ -1261,6 +1261,122 @@ async function getVendors(communityName) {
   return `${header}:\n\n${lines.join('\n\n')}`;
 }
 
+async function getServiceIssues(communityName, unitNumber, status = 'open') {
+  const propMap = await getPropertyMap();
+  let propIDs = [];
+  let resolvedName = communityName;
+
+  if (communityName) {
+    const q    = communityName.toLowerCase().replace(/[,.']/g, '');
+    const STOP = new Set(['community','communities','mobile','home','park','parks',
+                          'property','properties','llc','inc','corp','ltd','mhc',
+                          'the','and','of','at','in','management','realty']);
+    const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, ''))
+                   .filter(w => w.length >= 3 && !STOP.has(w));
+    const entries = [...propMap.entries()]
+      .filter(([, pn]) => {
+        const n = pn.toLowerCase();
+        return n.includes(q) || (words.length && words.every(w => n.includes(w)));
+      });
+    if (!entries.length && words.length) {
+      entries.push(...[...propMap.entries()]
+        .filter(([, pn]) => words.some(w => pn.toLowerCase().includes(w))));
+    }
+    propIDs      = entries.map(([id]) => id);
+    resolvedName = entries.length === 1 ? entries[0][1] : communityName;
+    if (!propIDs.length) {
+      const all = [...propMap.values()].filter(Boolean).sort().map(n => `• ${n}`).join('\n');
+      return `No property matching "${communityName}" found.\n\nAvailable communities:\n${all}`;
+    }
+  }
+
+  // Normalize unit number — strip leading "lot", "#", spaces
+  const unitNorm = unitNumber
+    ? unitNumber.replace(/^(lot|#|unit)\s*/i, '').trim().toLowerCase()
+    : null;
+
+  // Determine which RM endpoint to use — try ServiceIssues first, then WorkOrders
+  let issues = [];
+  let endpointUsed = '';
+  const endpoints = ['/ServiceIssues', '/WorkOrders'];
+  for (const ep of endpoints) {
+    try {
+      for (const pid of (propIDs.length ? propIDs : [null])) {
+        const qs   = pid ? `PropertyID=${pid}&pagesize=200` : 'pagesize=200';
+        const data = await rmGet(`${ep}?${qs}`);
+        const items = data?.Items ?? data?.items ?? (Array.isArray(data) ? data : []);
+        console.log(`[rm] ${ep} for prop ${pid ?? 'all'}: ${items.length} records`);
+        if (items.length && !endpointUsed) {
+          endpointUsed = ep;
+          console.log('[rm] ServiceIssue sample keys:', Object.keys(items[0]).join(', '));
+        }
+        issues = issues.concat(items);
+      }
+      if (issues.length || endpointUsed) break;
+    } catch (err) {
+      console.log(`[rm] ${ep} failed: ${err.message}`);
+    }
+  }
+
+  if (!issues.length && !endpointUsed) {
+    return `No service issues found${communityName ? ` for "${resolvedName}"` : ''}.`;
+  }
+
+  // Filter by status
+  const statusNorm = status.toLowerCase();
+  if (statusNorm !== 'all') {
+    issues = issues.filter(i => {
+      const s = (i.Status || i.ServiceIssueStatus || i.StatusName || '').toLowerCase();
+      if (statusNorm === 'open') return s.includes('open') || s.includes('progress') || s.includes('new') || s.includes('pending');
+      if (statusNorm === 'closed') return s.includes('close') || s.includes('complete') || s.includes('resolv') || s.includes('done');
+      return true;
+    });
+  }
+
+  // Filter by unit number (client-side)
+  if (unitNorm) {
+    issues = issues.filter(i => {
+      const u = (i.UnitNumber || i.LotNumber || i.Unit || '').toString().toLowerCase().trim();
+      return u === unitNorm || u === `lot ${unitNorm}` || u.endsWith(unitNorm);
+    });
+  }
+
+  if (!issues.length) {
+    const unitStr = unitNorm ? ` for lot/unit ${unitNumber}` : '';
+    const statusStr = statusNorm !== 'all' ? ` ${statusNorm}` : '';
+    return `No${statusStr} service issues found${unitStr}${communityName ? ` at "${resolvedName}"` : ''}.`;
+  }
+
+  const lines = issues.map(i => {
+    const id       = i.ServiceIssueID || i.WorkOrderID || i.ID || '?';
+    const subject  = i.Subject || i.Description || i.Title || i.Name || `Issue #${id}`;
+    const st       = i.Status || i.ServiceIssueStatus || i.StatusName || '';
+    const priority = i.Priority || i.PriorityName || '';
+    const category = i.Category || i.IssueType || i.WorkOrderType || '';
+    const unit     = i.UnitNumber || i.LotNumber || i.Unit || '';
+    const assigned = i.AssignedTo || i.AssignedTechnician || i.AssigneeName || '';
+    const created  = i.CreatedDate || i.OpenDate || i.ServiceDate || i.DateCreated || '';
+    const propName = i.PropertyID ? (propMap.get(Number(i.PropertyID)) || '') : '';
+
+    const meta = [
+      st        && `Status: ${st}`,
+      priority  && `Priority: ${priority}`,
+      category  && `Category: ${category}`,
+      unit      && `Unit/Lot: ${unit}`,
+      propName  && `Community: ${propName}`,
+      assigned  && `Assigned to: ${assigned}`,
+      created   && `Opened: ${new Date(created).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })}`,
+    ].filter(Boolean);
+
+    return [`**#${id} — ${subject}**`, ...meta.map(m => `  ${m}`)].join('\n');
+  });
+
+  const unitStr   = unitNorm ? ` — Lot/Unit ${unitNumber}` : '';
+  const statusStr = statusNorm !== 'all' ? ` (${statusNorm})` : '';
+  const park      = communityName ? resolvedName : 'All Communities';
+  return `SERVICE ISSUES — ${park}${unitStr}${statusStr} [${issues.length} found]:\n\n${lines.join('\n\n')}`;
+}
+
 module.exports = {
   lookupTenantByPhone,
   listProperties,
@@ -1276,6 +1392,7 @@ module.exports = {
   buildCallerContext,
   getRecurringCharges,
   getVendors,
+  getServiceIssues,
   getTenantContacts,
   getHistoryNotes,
   getTenantStatements,
