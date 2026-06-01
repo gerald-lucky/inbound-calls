@@ -3,6 +3,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { EventEmitter } = require('events');
 const rm = require('./rent-manager');
+const { PSA_SYSTEM_PROMPT } = require('./psa-persona');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
@@ -120,8 +121,7 @@ async function executeToolCall(toolName, toolInput) {
 class LLMService extends EventEmitter {
   constructor(systemPrompt, callerContext) {
     super();
-    this._systemPrompt = systemPrompt ||
-      'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
+    this._systemPrompt = systemPrompt || PSA_SYSTEM_PROMPT;
     this._callerContext = callerContext || '';
     /** @type {Array<{role: string, content: string|Array}>} */
     this.conversationHistory = [];
@@ -140,16 +140,13 @@ class LLMService extends EventEmitter {
 
     const systemPrompt = [
       this._systemPrompt,
-      this._callerContext ? `\n\n${this._callerContext}` : '',
-      '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
-      '\nYou are multilingual. You speak English, Spanish, Hindi, Punjabi, Gujarati, Bengali, Tamil, Telugu, Urdu, and Marathi fluently. If the caller speaks any of these languages, asks if you speak their language, or asks you to switch languages, immediately switch and continue the entire conversation in that language. Confirm warmly in that language (e.g. in Hindi: "हाँ, मैं हिंदी में बात कर सकती हूँ।"). Stay in that language for the rest of the call once switched.' +
-      '\nWhenever you are about to call any tool, first say a brief hold phrase in whatever language you are speaking — then call the tool.' +
-      '\nWhen a caller spells out their name letter by letter (e.g. "J-O-S-E" or "M, A, R, I, A"), reconstruct the full name from those letters and pass it to the lookup tool — do not pass the individual letters.' +
-      '\nIf a caller gives their name and the lookup fails, ask them to spell it letter by letter. After they spell it, attempt the lookup again with the reconstructed spelling.' +
-      '\nIf a name still cannot be found after spelling confirmation, ask for their unit or lot number as an alternative.' +
-      '\nFor payment history questions or disputes, use the get_payment_history tool with the tenant_id from the lookup.' +
-      '\nFor cash payments at Walmart or retail stores, use generate_cashpay_code to create a Zego CashPay code — read the code clearly to the caller.' +
-      '\nFor auto-pay setup or online account access, provide the resident\'s Tenant ID and the TWA URL from their account record — they register at that URL using their Tenant ID as their account number.',
+      this._callerContext ? `\n\n## Caller account context\n${this._callerContext}` : '',
+      '\n\n## Runtime reminders (phone call)' +
+      '\n- Keep responses to 2–4 sentences. No lists or markdown — speak naturally.' +
+      '\n- When a caller spells their name letter by letter (e.g. "J-O-S-E"), reconstruct the full name before passing to the lookup tool.' +
+      '\n- For payment history questions, use get_payment_history with the tenant_id from the lookup.' +
+      '\n- For cash payments at Walmart/CVS, use generate_cashpay_code and read the code clearly to the caller.' +
+      '\n- For TWA/online access, give the resident their Tenant ID and the URL https://lucky.twa.rentmanager.com.',
     ].join('');
 
     let fullTextResponse = '';
