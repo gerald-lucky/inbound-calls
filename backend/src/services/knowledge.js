@@ -1,22 +1,9 @@
 'use strict';
 
 const { createClient } = require('@supabase/supabase-js');
-const OpenAI = require('openai');
 
-const EMBED_MODEL  = 'text-embedding-3-small';
-const CHUNK_TOKENS = 400;  // ~300 words
-const OVERLAP_TOKENS = 50; // ~1–2 sentences
-
-let _openai = null;
-function getOpenAI() {
-  if (!_openai) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY is not set. Add it to your .env to enable knowledge base features.');
-    }
-    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  }
-  return _openai;
-}
+const CHUNK_TOKENS   = 400; // ~300 words per chunk
+const OVERLAP_TOKENS = 50;  // ~1–2 sentence overlap
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -37,8 +24,8 @@ function chunkText(text) {
     .map(p => p.trim())
     .filter(p => p.length > 0);
 
-  const chunks   = [];
-  let current    = '';
+  const chunks = [];
+  let current  = '';
 
   for (const para of paragraphs) {
     const currentTok = estimateTokens(current);
@@ -46,7 +33,6 @@ function chunkText(text) {
 
     if (currentTok + paraTok > CHUNK_TOKENS && current) {
       chunks.push(current.trim());
-      // carry a short overlap into the next chunk
       const overlapChars = OVERLAP_TOKENS * 4;
       const tail = current.length > overlapChars ? current.slice(-overlapChars) : current;
       current = tail + '\n\n' + para;
@@ -57,7 +43,7 @@ function chunkText(text) {
 
   if (current.trim()) chunks.push(current.trim());
 
-  // Split any single chunk that is still very long (e.g. one giant paragraph)
+  // Split any chunk that is still very long (e.g. a single giant paragraph)
   const result = [];
   for (const chunk of chunks) {
     if (estimateTokens(chunk) > CHUNK_TOKENS * 1.5) {
@@ -80,15 +66,19 @@ function chunkText(text) {
   return result.filter(c => c.length > 30);
 }
 
-// ── Embedding ─────────────────────────────────────────────────────────────────
+// ── Embedding via Supabase Edge Function ──────────────────────────────────────
+// Uses the built-in gte-small model (384 dimensions, no extra API key needed).
+// Deploy the edge function once with: supabase functions deploy embed
 
 async function embedTexts(texts) {
-  const openai = getOpenAI();
-  const response = await openai.embeddings.create({
-    model: EMBED_MODEL,
-    input: texts,
+  const { data, error } = await supabase.functions.invoke('embed', {
+    body: { input: texts },
   });
-  return response.data.map(d => d.embedding);
+
+  if (error) throw new Error(`Embedding failed: ${error.message}`);
+  if (!data?.embeddings) throw new Error('Embedding function returned no data.');
+
+  return data.embeddings;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -99,15 +89,15 @@ async function ingestDocument(filename, text) {
     .insert({ filename, content: text })
     .select()
     .single();
-  if (docErr) throw new Error(`Supabase insert failed: ${docErr.message}`);
+  if (docErr) throw new Error(`Document insert failed: ${docErr.message}`);
 
   const chunks = chunkText(text);
   if (!chunks.length) throw new Error('No content to ingest after chunking.');
 
-  // Embed in batches of 100 (OpenAI limit)
+  // Embed in batches of 20 (edge function concurrency limit)
   const allEmbeddings = [];
-  for (let i = 0; i < chunks.length; i += 100) {
-    const batch = chunks.slice(i, i + 100);
+  for (let i = 0; i < chunks.length; i += 20) {
+    const batch = chunks.slice(i, i + 20);
     const embeddings = await embedTexts(batch);
     allEmbeddings.push(...embeddings);
   }
@@ -131,7 +121,7 @@ async function searchKnowledge(query, limit = 5) {
   const { data, error } = await supabase.rpc('match_chunks', {
     query_embedding: embedding,
     match_count:     limit,
-    match_threshold: 0.4, // permissive — Claude will judge relevance
+    match_threshold: 0.4,
   });
 
   if (error) throw new Error(`Search failed: ${error.message}`);
