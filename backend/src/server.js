@@ -15,6 +15,7 @@ const leadsRoute        = require('./routes/leads');
 const tenantsRoute      = require('./routes/tenants');
 const paymentsRoute     = require('./routes/payments');
 const slackRoute        = require('./routes/slack');
+const knowledgeRoute    = require('./routes/knowledge');
 const CallSession       = require('./call-session');
 
 const app    = express();
@@ -38,6 +39,7 @@ app.use('/api/leads',         leadsRoute);
 app.use('/api/tenants',       tenantsRoute);
 app.use('/api/payments',      paymentsRoute);
 app.use('/slack',             slackRoute);
+app.use('/api/knowledge',    knowledgeRoute);
 
 wss.on('connection', (ws, req) => {
   console.log(`[server] WebSocket connected — ${req.url}`);

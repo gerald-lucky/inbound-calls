@@ -19,6 +19,7 @@
       <li><a href="#" data-tab="leads">Leads</a></li>
       <li><a href="#" data-tab="tenants">Tenants</a></li>
       <li><a href="#" data-tab="payments">Payments</a></li>
+      <li><a href="#" data-tab="knowledge">Knowledge Base</a></li>
     </ul>
   </nav>
 
@@ -290,6 +291,95 @@
             </div>
           </form>
         </div>
+      </div>
+    </section>
+
+  </main>
+
+    <!-- ── Knowledge Base ────────────────────────────────────── -->
+    <section id="tab-knowledge" class="tab">
+      <div class="page-header">
+        <div>
+          <h1>Knowledge Base</h1>
+          <p class="page-subtitle">Upload SOPs, policies, and community documents. Britney will search this library to answer caller questions accurately.</p>
+        </div>
+      </div>
+
+      <div class="kb-layout">
+
+        <!-- Left: documents + upload -->
+        <div class="kb-left">
+
+          <!-- Upload card -->
+          <div class="card">
+            <div class="card-header">
+              <h2>Upload Document</h2>
+            </div>
+
+            <!-- File drop zone -->
+            <div class="file-drop" id="kb-drop-zone">
+              <label class="drop-label" for="kb-file-input">
+                <span class="drop-icon">📄</span>
+                <span id="kb-file-name">Drop a file here or click to browse</span>
+                <span style="font-size:0.78rem;color:#9ca3af">.txt · .md · .docx supported</span>
+              </label>
+              <input type="file" id="kb-file-input" accept=".txt,.md,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document" style="display:none" />
+            </div>
+
+            <div style="text-align:center;color:var(--muted);font-size:0.8rem;margin:-0.5rem 0 0.75rem">— or paste text below —</div>
+
+            <div class="field" style="margin-bottom:0.75rem">
+              <label>Document name <span class="req">*</span></label>
+              <input type="text" id="kb-doc-name" placeholder="e.g. Pet Policy, Rules and Regulations" />
+            </div>
+
+            <div class="field" style="margin-bottom:0.75rem">
+              <label>Content (paste plain text)</label>
+              <textarea id="kb-paste-content" rows="6" placeholder="Paste document text here…"></textarea>
+            </div>
+
+            <button class="btn-primary" id="kb-upload-btn" style="width:100%">Ingest Document</button>
+            <div id="kb-upload-status"></div>
+          </div>
+
+          <!-- Documents list -->
+          <div class="card">
+            <div class="card-header">
+              <h2>Documents</h2>
+              <button class="btn-secondary" id="kb-docs-refresh">Refresh</button>
+            </div>
+            <div id="kb-docs-list"><p class="loading">Loading…</p></div>
+          </div>
+
+        </div>
+
+        <!-- Right: chat -->
+        <div class="kb-right">
+          <div class="card kb-chat-card">
+            <div class="kb-chat-header">
+              <div>
+                <h2>Chat with Britney</h2>
+                <p class="page-subtitle" style="margin:0.1rem 0 0">Test how Britney answers using the knowledge base</p>
+              </div>
+              <button class="btn-secondary" id="kb-chat-clear">Clear</button>
+            </div>
+
+            <div class="kb-chat-messages" id="kb-chat-messages">
+              <div class="kb-chat-welcome">
+                <span>👋</span>
+                <p>Hi! I'm Britney, the Lucky Communities Property Support Agent. Ask me anything about our policies, rules, or procedures — or test a question a resident might ask.</p>
+              </div>
+            </div>
+
+            <div id="kb-sources-bar" class="kb-sources-bar" hidden></div>
+
+            <div class="kb-chat-input-row">
+              <input type="text" id="kb-chat-input" placeholder="Ask a question…" autocomplete="off" />
+              <button class="btn-primary" id="kb-chat-send">Send</button>
+            </div>
+          </div>
+        </div>
+
       </div>
     </section>
 

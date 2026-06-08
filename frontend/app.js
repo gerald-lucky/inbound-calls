@@ -13,7 +13,8 @@ function showTab(name) {
   if (name === 'calls')     loadCalls();
   if (name === 'leads')     loadLeads();
   if (name === 'tenants')  loadTenants();
-  if (name === 'payments') loadPayments();
+  if (name === 'payments')  loadPayments();
+  if (name === 'knowledge') loadKnowledge();
 }
 
 navLinks.forEach((a) =>
@@ -602,3 +603,242 @@ apiFetch('/api/tenants').then((data) => {
 }).catch(() => {});
 
 showTab('dashboard');
+
+// ── Knowledge Base ────────────────────────────────────────────────────────────
+
+let _kbFile       = null;     // selected File object
+let _kbChatHistory = [];      // [{role, content}]
+let _kbChatBusy   = false;
+
+function loadKnowledge() {
+  loadKbDocs();
+  bindKbUpload();
+  bindKbChat();
+}
+
+// ── Documents list ────────────────────────────────────────────────────────────
+
+async function loadKbDocs() {
+  const el = document.getElementById('kb-docs-list');
+  el.innerHTML = '<p class="loading">Loading…</p>';
+  try {
+    const docs = await apiFetch('/api/knowledge/documents');
+    if (!docs.length) {
+      el.innerHTML = '<p class="empty">No documents yet. Upload one to get started.</p>';
+      return;
+    }
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th style="text-align:center">Chunks</th>
+            <th>Uploaded</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${docs.map(d => `
+            <tr class="kb-doc-row">
+              <td style="font-weight:500">${esc(d.filename)}</td>
+              <td style="text-align:center" class="kb-doc-chunks">${d.chunk_count ?? '—'}</td>
+              <td>${fmtDate(d.created_at)}</td>
+              <td><button class="btn-danger" data-doc-id="${esc(d.id)}" data-doc-name="${esc(d.filename)}">Delete</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+
+    el.querySelectorAll('[data-doc-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const { docId, docName } = btn.dataset;
+        if (!confirm(`Delete "${docName}"? This cannot be undone.`)) return;
+        btn.disabled = true;
+        try {
+          await apiFetch(`/api/knowledge/documents/${btn.dataset.docId}`, { method: 'DELETE' });
+          loadKbDocs();
+        } catch (err) {
+          alert(`Delete failed: ${err.message}`);
+          btn.disabled = false;
+        }
+      });
+    });
+  } catch (err) {
+    el.innerHTML = `<p class="empty" style="color:var(--danger)">${esc(err.message)}</p>`;
+  }
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+
+function bindKbUpload() {
+  const dropZone   = document.getElementById('kb-drop-zone');
+  const fileInput  = document.getElementById('kb-file-input');
+  const fileNameEl = document.getElementById('kb-file-name');
+  const nameInput  = document.getElementById('kb-doc-name');
+  const pasteArea  = document.getElementById('kb-paste-content');
+  const uploadBtn  = document.getElementById('kb-upload-btn');
+  const statusEl   = document.getElementById('kb-upload-status');
+
+  if (dropZone._kbBound) return;
+  dropZone._kbBound = true;
+
+  function setFile(file) {
+    _kbFile = file;
+    fileNameEl.textContent = file.name;
+    fileNameEl.style.color = 'var(--text)';
+    if (!nameInput.value) nameInput.value = file.name.replace(/\.[^.]+$/, '');
+    pasteArea.value = '';
+  }
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+  });
+
+  pasteArea.addEventListener('input', () => {
+    if (pasteArea.value) {
+      _kbFile = null;
+      fileNameEl.textContent = 'Drop a file here or click to browse';
+      fileNameEl.style.color = '';
+      fileInput.value = '';
+    }
+  });
+
+  uploadBtn.addEventListener('click', async () => {
+    const docName   = nameInput.value.trim();
+    const pasteText = pasteArea.value.trim();
+
+    if (!docName)               { kbStatus(statusEl, 'error', 'Please enter a document name.'); return; }
+    if (!_kbFile && !pasteText) { kbStatus(statusEl, 'error', 'Upload a file or paste text.'); return; }
+
+    uploadBtn.disabled = true;
+    kbStatus(statusEl, 'info', 'Ingesting… this may take a few seconds.');
+
+    try {
+      let result;
+      if (_kbFile) {
+        const fd = new FormData();
+        fd.append('file', _kbFile);
+        const resp = await fetch('/api/knowledge/ingest-file', { method: 'POST', body: fd });
+        result = await resp.json();
+        if (!resp.ok) throw new Error(result.error || 'Upload failed');
+      } else {
+        result = await apiFetch('/api/knowledge/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: docName, content: pasteText }),
+        });
+      }
+
+      kbStatus(statusEl, 'success', `✓ "${result.filename}" ingested — ${result.chunks} chunks created.`);
+      nameInput.value  = '';
+      pasteArea.value  = '';
+      fileNameEl.textContent = 'Drop a file here or click to browse';
+      fileNameEl.style.color = '';
+      _kbFile = null;
+      fileInput.value = '';
+      loadKbDocs();
+    } catch (err) {
+      kbStatus(statusEl, 'error', err.message);
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('kb-docs-refresh').addEventListener('click', loadKbDocs);
+}
+
+function kbStatus(el, type, msg) {
+  el.className = `status-msg ${type}`;
+  el.textContent = msg;
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────────
+
+function bindKbChat() {
+  const messagesEl = document.getElementById('kb-chat-messages');
+  const inputEl    = document.getElementById('kb-chat-input');
+  const sendBtn    = document.getElementById('kb-chat-send');
+  const clearBtn   = document.getElementById('kb-chat-clear');
+  const sourcesBar = document.getElementById('kb-sources-bar');
+
+  if (sendBtn._kbBound) return;
+  sendBtn._kbBound = true;
+
+  async function sendMessage() {
+    const text = inputEl.value.trim();
+    if (!text || _kbChatBusy) return;
+
+    // Remove welcome message on first send
+    const welcome = messagesEl.querySelector('.kb-chat-welcome');
+    if (welcome) welcome.remove();
+
+    inputEl.value = '';
+    sourcesBar.hidden = true;
+
+    appendKbBubble(messagesEl, 'user', text);
+    _kbChatHistory.push({ role: 'user', content: text });
+
+    const thinkingEl = appendKbBubble(messagesEl, 'thinking', 'Britney is thinking…');
+    _kbChatBusy = true;
+    sendBtn.disabled = true;
+
+    try {
+      const data = await apiFetch('/api/knowledge/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: _kbChatHistory }),
+      });
+
+      thinkingEl.remove();
+
+      const reply = data.response || '(no response)';
+      appendKbBubble(messagesEl, 'agent', reply);
+      _kbChatHistory.push({ role: 'assistant', content: reply });
+
+      if (data.sources && data.sources.length) {
+        sourcesBar.hidden = false;
+        sourcesBar.innerHTML = `<strong>Sources used:</strong> ${
+          data.sources.map((s, i) =>
+            `<span title="${esc(s.content)}">[${i+1}] ${(Number(s.similarity) * 100).toFixed(0)}% match</span>`
+          ).join(' · ')
+        }`;
+      }
+    } catch (err) {
+      thinkingEl.remove();
+      appendKbBubble(messagesEl, 'agent', `Sorry, something went wrong: ${err.message}`);
+    } finally {
+      _kbChatBusy = false;
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+
+  clearBtn.addEventListener('click', () => {
+    _kbChatHistory = [];
+    sourcesBar.hidden = true;
+    messagesEl.innerHTML = `
+      <div class="kb-chat-welcome">
+        <span>👋</span>
+        <p>Hi! I'm Britney, the Lucky Communities Property Support Agent. Ask me anything about our policies, rules, or procedures — or test a question a resident might ask.</p>
+      </div>`;
+  });
+}
+
+function appendKbBubble(container, type, text) {
+  const el = document.createElement('div');
+  el.className = `kb-bubble kb-bubble-${type}`;
+  el.textContent = text;
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+  return el;
+}

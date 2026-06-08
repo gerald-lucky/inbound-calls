@@ -2,7 +2,8 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { EventEmitter } = require('events');
-const rm = require('./rent-manager');
+const rm        = require('./rent-manager');
+const knowledge = require('./knowledge');
 const { PSA_SYSTEM_PROMPT } = require('./psa-persona');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -89,6 +90,22 @@ const TOOLS = [
           description: 'Filter by status. Use "open" for active requests, "all" for full history. Default: "all".',
         },
       },
+    },
+  },
+  {
+    name: 'search_knowledge',
+    description:
+      'Search the Lucky Communities knowledge base for policy information, SOPs, community rules, ' +
+      'procedures, and operating standards. Use this whenever a caller asks about rules, policies, ' +
+      'fees, pet policy, pool rules, maintenance procedures, lease terms, move-in/out processes, ' +
+      'or any question that requires company-specific knowledge. ' +
+      'Prefer this over guessing or relying on memory.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The caller\'s question or topic to search for' },
+      },
+      required: ['query'],
     },
   },
   {
@@ -381,6 +398,21 @@ class LLMService extends EventEmitter {
       } catch (err) {
         console.error('[llm] getTenantStatements error:', err.message);
         return `Could not retrieve statements: ${err.message}. The resident can view statements by logging into the Tenant Web Access portal.`;
+      }
+    }
+
+    // ── search_knowledge ──────────────────────────────────────────────────────
+    if (toolName === 'search_knowledge') {
+      try {
+        const chunks = await knowledge.searchKnowledge(toolInput.query, 4);
+        if (!chunks || !chunks.length) {
+          return 'No relevant information found in the knowledge base for that question. Answer from general knowledge if you can, or let the caller know you will follow up.';
+        }
+        return 'Relevant knowledge base results:\n\n' +
+          chunks.map((c, i) => `[${i + 1}] ${c.content}`).join('\n\n---\n\n');
+      } catch (err) {
+        console.warn('[llm] search_knowledge error:', err.message);
+        return 'Knowledge base search is currently unavailable. Answer from your training if possible.';
       }
     }
 
