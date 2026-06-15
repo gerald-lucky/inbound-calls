@@ -6,6 +6,7 @@ const TTSService           = require('./services/tts');
 const callLogger           = require('./services/call-logger');
 const parkData             = require('./services/park-data');
 const agentConfigs         = require('./services/agent-configs');
+const rag                  = require('./services/rag');
 
 /**
  * CallSession manages the complete lifecycle of one inbound phone call.
@@ -29,6 +30,7 @@ class CallSession {
     this._callSid      = null;
     this._callerNumber = 'unknown';
     this._twilioNumber = null;
+    this._direction    = 'inbound';
     this._agentConfig  = null;
     this._callDbId     = null;
 
@@ -36,6 +38,7 @@ class CallSession {
     this._systemPrompt = null;
     this._greeting     = null;
     this._voiceId      = null;
+    this._speaksFirst  = true;
 
     this._transcription        = new TranscriptionService();
     this._llm                  = null;
@@ -78,11 +81,14 @@ class CallSession {
           this._callSid      = cp.callSid      || msg.start.callSid || null;
           this._callerNumber = cp.callerNumber || 'unknown';
           this._twilioNumber = cp.twilioNumber || null;
+          this._direction    = cp.direction    || 'inbound';
           const configId     = cp.configId     || null;
 
           this._initCall(configId).then(() => {
             this._wiredTTS();
-            setTimeout(() => this._speak(this._greeting), 500);
+            if (this._speaksFirst) {
+              setTimeout(() => this._speak(this._greeting), 500);
+            }
           }).catch((err) => {
             console.error('[call-session] _initCall failed:', err.message);
           });
@@ -166,6 +172,9 @@ class CallSession {
 
     this._abortController = new AbortController();
     const { signal } = this._abortController;
+
+    // Per-utterance RAG: emit a hold phrase while we search, then pass context to LLM
+    await this._llm.injectUtteranceContext(text, signal, () => this._speakSentence('Let me check that for you.'));
 
     const onSentence = async (sentence) => {
       if (signal.aborted) return;
@@ -254,25 +263,35 @@ class CallSession {
       'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
     this._greeting = cfg?.greeting || process.env.AGENT_GREETING ||
       'Hello! Thanks for calling. How can I help you today?';
-    this._voiceId = cfg?.voice_id || process.env.ELEVENLABS_VOICE_ID;
+    this._voiceId    = cfg?.voice_id || process.env.ELEVENLABS_VOICE_ID;
+    this._speaksFirst = cfg?.speaks_first !== false; // default true
 
     // Create TTS now that we have the voice ID
     this._tts = new TTSService(this._voiceId);
 
     console.log(`[call-session] Init — caller: ${this._callerNumber}, agent: ${cfg?.name || 'default'}`);
 
-    // Log call start + fetch caller context in parallel
-    const [, callerContext] = await Promise.all([
-      callLogger.startCall({
+    // Check for pre-existing record (outbound calls create one at initiation)
+    // while also fetching caller context and RAG context in parallel
+    const [existingDbId, callerContext, staticRagContext] = await Promise.all([
+      callLogger.findCallBySid(this._callSid),
+      parkData.buildCallerContext(this._callerNumber),
+      rag.buildContext('park rules policies FAQs rent maintenance fees', this._agentConfig?.id || null),
+    ]);
+
+    if (existingDbId) {
+      this._callDbId = existingDbId;
+    } else {
+      this._callDbId = await callLogger.startCall({
         callSid:       this._callSid,
         agentConfigId: this._agentConfig?.id || null,
         twilioNumber:  this._twilioNumber,
         callerNumber:  this._callerNumber,
-      }).then((id) => { this._callDbId = id; }),
-      parkData.buildCallerContext(this._callerNumber),
-    ]);
+        direction:     this._direction,
+      });
+    }
 
-    this._llm = new LLMService(this._systemPrompt, callerContext);
+    this._llm = new LLMService(this._systemPrompt, callerContext, staticRagContext, this._agentConfig?.id || null);
   }
 
   _extractLeadInBackground() {
@@ -326,11 +345,30 @@ class CallSession {
     }
     this._transcription.close();
     if (this._tts) this._tts.abort();
-    if (this._llm) this._llm.reset();
     this._isSpeaking = false;
     this._processingUtterance = false;
     callLogger.endCall(this._callDbId, this._startedAt);
+    this._generateSummaryInBackground();
+    if (this._llm) this._llm.reset();
     console.log('[call-session] Torn down');
+  }
+
+  _generateSummaryInBackground() {
+    if (!this._callDbId || !this._llm) return;
+
+    const minSecs = parseInt(process.env.SUMMARY_MIN_DURATION_SECONDS ?? '120', 10);
+    const durationSecs = Math.round((Date.now() - this._startedAt.getTime()) / 1000);
+    if (durationSecs < minSecs) {
+      console.log(`[call-session] Skipping summary — duration ${durationSecs}s < minimum ${minSecs}s`);
+      return;
+    }
+
+    this._llm.generateSummary().then((summary) => {
+      if (summary) {
+        callLogger.saveSummary(this._callDbId, summary);
+        console.log(`[call-session] Summary saved for call ${this._callDbId}`);
+      }
+    }).catch(() => {});
   }
 }
 

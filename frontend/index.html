@@ -14,11 +14,12 @@
     </div>
     <ul class="nav-links">
       <li><a href="#" data-tab="dashboard" class="active">Dashboard</a></li>
-      <li><a href="#" data-tab="routing">Routing</a></li>
+      <li><a href="#" data-tab="agents">Agents</a></li>
       <li><a href="#" data-tab="calls">Calls</a></li>
       <li><a href="#" data-tab="leads">Leads</a></li>
       <li><a href="#" data-tab="tenants">Tenants</a></li>
       <li><a href="#" data-tab="payments">Payments</a></li>
+      <li><a href="#" data-tab="knowledge-base">Knowledge Base</a></li>
     </ul>
   </nav>
 
@@ -55,13 +56,13 @@
       </div>
     </section>
 
-    <!-- ── Routing ────────────────────────────────────────────── -->
-    <section id="tab-routing" class="tab">
+    <!-- ── Agents ────────────────────────────────────────────── -->
+    <section id="tab-agents" class="tab">
       <div class="page-header">
-        <h1>Routing</h1>
+        <h1>Agents</h1>
         <button class="btn-primary" id="new-config-btn">+ New Agent</button>
       </div>
-      <p class="page-subtitle">Each row maps a Twilio number to an AI agent persona. Set your Quo/OpenPhone number to forward to the Twilio number listed here.</p>
+      <p class="page-subtitle">Each agent maps a Twilio number to an AI persona with its own prompt, voice, and knowledge base. Set your Quo/OpenPhone number to forward to the Twilio number listed.</p>
 
       <div class="card" id="routing-list-card">
         <div id="routing-list"><p class="loading">Loading…</p></div>
@@ -106,6 +107,14 @@
                 <small>Leave blank to use the global default.</small>
               </div>
               <div class="field">
+                <label>Bot speaks first</label>
+                <select id="f-speaks-first">
+                  <option value="true">Yes — greet on connect</option>
+                  <option value="false">No — wait for caller</option>
+                </select>
+                <small>Set to "Yes" for outbound calls to avoid dead silence when answered.</small>
+              </div>
+              <div class="field">
                 <label>Status</label>
                 <select id="f-active">
                   <option value="true">Active</option>
@@ -125,7 +134,10 @@
 
     <!-- ── Calls ──────────────────────────────────────────────── -->
     <section id="tab-calls" class="tab">
-      <h1>Call Log</h1>
+      <div class="page-header">
+        <h1>Call Log</h1>
+        <button class="btn-primary" id="test-call-btn">+ Test Call</button>
+      </div>
       <div class="filter-bar">
         <select id="calls-filter-config">
           <option value="">All agents</option>
@@ -137,17 +149,53 @@
         <div id="calls-list"><p class="loading">Loading…</p></div>
       </div>
 
-      <!-- Transcript drawer -->
-      <div class="drawer-backdrop" id="transcript-backdrop" hidden>
-        <div class="drawer">
-          <div class="drawer-header">
-            <div>
-              <h2 id="drawer-title">Transcript</h2>
-              <div class="drawer-meta" id="drawer-meta"></div>
-            </div>
-            <button class="modal-close" id="drawer-close">✕</button>
+      <!-- Test Call modal -->
+      <div class="modal-backdrop" id="test-call-backdrop" hidden>
+        <div class="modal">
+          <div class="modal-header">
+            <h2>Test Outbound Call</h2>
+            <button class="modal-close" id="tc-close">✕</button>
           </div>
-          <div class="transcript-body" id="transcript-body"></div>
+          <div class="form-grid">
+            <div class="field full">
+              <label>Phone Number <span class="req">*</span></label>
+              <input type="tel" id="tc-phone" placeholder="+15551234567" />
+              <small>E.164 format — include country code (e.g. +1…)</small>
+            </div>
+            <div class="field full">
+              <label>Agent <span class="req">*</span></label>
+              <select id="tc-agent">
+                <option value="">Select agent…</option>
+              </select>
+            </div>
+          </div>
+          <div id="tc-status" class="tc-status" hidden></div>
+          <div class="modal-actions">
+            <button type="button" class="btn-secondary" id="tc-cancel">Cancel</button>
+            <button type="button" class="btn-primary"   id="tc-call">Call</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Call Detail dialog -->
+      <div class="modal-backdrop" id="call-detail-backdrop" hidden>
+        <div class="modal modal-lg">
+          <div class="modal-header">
+            <div>
+              <h2 id="cd-call-id">Call Details</h2>
+              <div class="cd-subtitle" id="cd-subtitle"></div>
+            </div>
+            <button class="modal-close" id="cd-close">✕</button>
+          </div>
+          <div class="cd-overview" id="cd-overview"></div>
+          <div class="cd-tabs" id="cd-tabs">
+            <button class="cd-tab active" data-tab="transcript">Transcript</button>
+            <button class="cd-tab" data-tab="recording">Recording</button>
+            <button class="cd-tab" data-tab="summary">Summary</button>
+          </div>
+          <div class="cd-body" id="cd-body">
+            <p class="loading">Loading…</p>
+          </div>
         </div>
       </div>
     </section>
@@ -287,6 +335,60 @@
             <div class="modal-actions">
               <button type="button" class="btn-secondary" id="payment-modal-cancel">Cancel</button>
               <button type="submit" class="btn-primary">Save Payment</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Knowledge Base ──────────────────────────────────── -->
+    <section id="tab-knowledge-base" class="tab">
+      <div class="page-header">
+        <h1>Knowledge Base</h1>
+        <button class="btn-primary" id="new-doc-btn">+ Upload Document</button>
+      </div>
+      <p class="page-subtitle">Documents uploaded here are embedded and used by the voice bot to answer questions. Each agent config has its own knowledge base.</p>
+
+      <div class="filter-bar">
+        <select id="kb-filter-config">
+          <option value="">All agents</option>
+        </select>
+        <button class="btn-secondary" id="kb-refresh">Refresh</button>
+      </div>
+
+      <div class="card">
+        <div id="kb-list"><p class="loading">Loading…</p></div>
+      </div>
+
+      <!-- Upload document modal -->
+      <div class="modal-backdrop" id="kb-modal-backdrop" hidden>
+        <div class="modal">
+          <div class="modal-header">
+            <h2>Upload Document</h2>
+            <button class="modal-close" id="kb-modal-close">✕</button>
+          </div>
+          <form id="kb-form">
+            <div class="form-grid">
+              <div class="field full">
+                <label>Agent Config <span class="req">*</span></label>
+                <select id="kb-agent-select" required>
+                  <option value="">Select agent…</option>
+                </select>
+              </div>
+              <div class="field full">
+                <label>File <span class="req">*</span></label>
+                <div class="file-drop" id="kb-drop-zone">
+                  <div class="drop-icon">📄</div>
+                  <div class="drop-label">Drag &amp; drop or <strong>click to browse</strong></div>
+                  <div class="drop-hint">PDF or plain text · max 20 MB</div>
+                  <input type="file" id="kb-file-input" accept=".pdf,.txt,.md,text/plain,application/pdf" hidden />
+                </div>
+                <div id="kb-file-name" style="margin-top:.5rem;font-size:.85rem;color:var(--muted)"></div>
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="btn-secondary" id="kb-modal-cancel">Cancel</button>
+              <button type="submit" class="btn-primary" id="kb-upload-btn">Upload</button>
             </div>
           </form>
         </div>

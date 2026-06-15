@@ -4,7 +4,7 @@ const express = require('express');
 const router = express.Router();
 const agentConfigs = require('../services/agent-configs');
 
-// POST /incoming-call — Twilio webhook for every inbound call.
+// POST /incoming-call — Twilio webhook for both inbound and outbound calls.
 // Returns TwiML that opens a Media Stream WebSocket, passing call
 // metadata as <Parameter> elements (no query string needed).
 router.post('/', async (req, res) => {
@@ -14,13 +14,26 @@ router.post('/', async (req, res) => {
     return res.status(500).send('Server misconfigured');
   }
 
-  const callSid   = req.body.CallSid || '';
-  const callerNum = req.body.From    || 'unknown';
-  const twilioNum = req.body.To      || '';
+  const callSid   = req.body.CallSid   || '';
+  // Twilio sets Direction to 'outbound-api' for REST-initiated calls
+  const isOutbound = (req.body.Direction || '') === 'outbound-api';
+  // For outbound: From = our Twilio number, To = the called number
+  // For inbound:  From = caller's number,   To = our Twilio number
+  const callerNum = isOutbound ? (req.body.To   || 'unknown') : (req.body.From || 'unknown');
+  const twilioNum = isOutbound ? (req.body.From || '')        : (req.body.To   || '');
 
-  console.log(`[incoming-call] ${callerNum} → ${twilioNum} (${callSid})`);
+  console.log(`[incoming-call] ${callerNum} → ${twilioNum} (${callSid}) [${isOutbound ? 'outbound' : 'inbound'}]`);
 
-  const config = await agentConfigs.findByTwilioNumber(twilioNum);
+  // Prefer explicit configId query param (set by outbound call creator), fall back to number lookup
+  let config = null;
+  const configId = req.query.configId || null;
+  if (configId) {
+    try { config = await agentConfigs.getById(configId); } catch {}
+  }
+  if (!config) {
+    config = await agentConfigs.findByTwilioNumber(twilioNum);
+  }
+
   if (config) {
     console.log(`[incoming-call] Using agent config: "${config.name}" (${config.id})`);
   } else {
@@ -31,7 +44,6 @@ router.post('/', async (req, res) => {
   const wsUrl = base.replace(/^https?/, 'wss') + '/media-stream';
   console.log(`[incoming-call] WS stream URL: ${wsUrl}`);
 
-  // Pass metadata via <Parameter> — avoids query-string / XML-escaping issues
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -40,6 +52,7 @@ router.post('/', async (req, res) => {
       <Parameter name="callerNumber" value="${callerNum}" />
       <Parameter name="twilioNumber" value="${twilioNum}" />
       <Parameter name="configId"     value="${config?.id || ''}" />
+      <Parameter name="direction"    value="${isOutbound ? 'outbound' : 'inbound'}" />
     </Stream>
   </Connect>
 </Response>`;

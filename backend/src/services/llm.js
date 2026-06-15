@@ -2,7 +2,8 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { EventEmitter } = require('events');
-const rm = require('./rent-manager');
+const rm  = require('./rent-manager');
+const rag = require('./rag');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
@@ -109,8 +110,10 @@ async function executeToolCall(toolName, toolInput) {
  * LLMService handles a single conversation with Claude Sonnet 4.6.
  * Supports tool use so Claude can query the residents database by name/lot.
  *
- * @param {string} systemPrompt - Per-agent system prompt (from agent config or env var).
- * @param {string} callerContext - Pre-fetched tenant account info (or "not found" hint).
+ * @param {string} systemPrompt   - Per-agent system prompt (from agent config or env var).
+ * @param {string} callerContext  - Pre-fetched tenant account info (or "not found" hint).
+ * @param {string} ragContext     - Pre-loaded KB context injected once into every system prompt.
+ * @param {string} agentConfigId  - Agent config ID used for per-utterance KB search.
  *
  * Events emitted:
  *   'sentence'  (text: string)     — complete sentence ready for TTS
@@ -118,13 +121,43 @@ async function executeToolCall(toolName, toolInput) {
  *   'error'     (err: Error)
  */
 class LLMService extends EventEmitter {
-  constructor(systemPrompt, callerContext) {
+  constructor(systemPrompt, callerContext, ragContext, agentConfigId) {
     super();
-    this._systemPrompt = systemPrompt ||
+    this._systemPrompt   = systemPrompt ||
       'You are a helpful assistant. Answer concisely since your responses will be read aloud.';
-    this._callerContext = callerContext || '';
+    this._callerContext  = callerContext  || '';
+    this._ragContext     = ragContext     || '';
+    this._agentConfigId  = agentConfigId || null;
+    this._utteranceRagContext = ''; // set per-utterance before respond() is called
     /** @type {Array<{role: string, content: string|Array}>} */
     this.conversationHistory = [];
+  }
+
+  /**
+   * Fetch KB context relevant to the current utterance.
+   * Only runs for substantive utterances (>5 words) to avoid overhead on greetings.
+   * Emits the hold phrase only if KB results are found, so the caller doesn't hear
+   * "Let me check that" before a simple reply that doesn't need KB lookup.
+   *
+   * @param {string}   utterance
+   * @param {AbortSignal} signal
+   * @param {Function} onHoldPhrase - async callback to speak a brief hold phrase
+   */
+  async injectUtteranceContext(utterance, signal, onHoldPhrase) {
+    this._utteranceRagContext = '';
+    if (!this._agentConfigId || signal?.aborted) return;
+    // Skip KB search for very short utterances (greetings, yes/no, etc.)
+    if (utterance.trim().split(/\s+/).length < 5) return;
+    try {
+      const ctx = await rag.buildContext(utterance, this._agentConfigId, 3);
+      if (ctx && !signal?.aborted) {
+        // Only emit hold phrase when we actually have KB results to surface
+        await onHoldPhrase();
+        this._utteranceRagContext = ctx;
+      }
+    } catch {
+      this._utteranceRagContext = '';
+    }
   }
 
   /**
@@ -140,7 +173,9 @@ class LLMService extends EventEmitter {
 
     const systemPrompt = [
       this._systemPrompt,
-      this._callerContext ? `\n\n${this._callerContext}` : '',
+      this._callerContext        ? `\n\n${this._callerContext}`        : '',
+      this._ragContext           ? `\n\n${this._ragContext}`           : '',
+      this._utteranceRagContext  ? `\n\n${this._utteranceRagContext}`  : '',
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
       '\nYou are multilingual. You speak English, Spanish, Hindi, Punjabi, Gujarati, Bengali, Tamil, Telugu, Urdu, and Marathi fluently. If the caller speaks any of these languages, asks if you speak their language, or asks you to switch languages, immediately switch and continue the entire conversation in that language. Confirm warmly in that language (e.g. in Hindi: "हाँ, मैं हिंदी में बात कर सकती हूँ।"). Stay in that language for the rest of the call once switched.' +
       '\nWhenever you are about to call any tool, first say a brief hold phrase in whatever language you are speaking — then call the tool.' +
@@ -274,6 +309,31 @@ class LLMService extends EventEmitter {
         email: parsed.email || null,
         notes: parsed.notes || null,
       };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Generate a short AI summary of the call after it ends.
+   * @returns {Promise<string|null>}
+   */
+  async generateSummary() {
+    const turns = this.conversationHistory.filter((m) => typeof m.content === 'string');
+    if (turns.length < 2) return null;
+
+    const transcript = turns
+      .map((m) => `${m.role === 'user' ? 'Caller' : 'Agent'}: ${m.content}`)
+      .join('\n');
+
+    try {
+      const response = await anthropic.messages.create({
+        model:      MODEL,
+        max_tokens: 250,
+        system:     "Summarize this phone call in 2-3 sentences. Cover: the caller's purpose, key information exchanged, and the outcome or next steps. Be factual and concise.",
+        messages:   [{ role: 'user', content: transcript }],
+      });
+      return response.content[0]?.text?.trim() || null;
     } catch {
       return null;
     }

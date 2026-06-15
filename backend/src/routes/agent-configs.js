@@ -29,7 +29,7 @@ router.get('/:id', async (req, res) => {
 
 // POST /api/agent-configs — create
 router.post('/', async (req, res) => {
-  const { name, twilio_number, quo_number, system_prompt, voice_id, greeting, is_active } = req.body;
+  const { name, twilio_number, quo_number, system_prompt, voice_id, greeting, is_active, speaks_first } = req.body;
   if (!name || !twilio_number || !system_prompt) {
     return res.status(400).json({ error: 'name, twilio_number, and system_prompt are required' });
   }
@@ -37,11 +37,12 @@ router.post('/', async (req, res) => {
     const data = await agentConfigs.create({
       name,
       twilio_number,
-      quo_number: quo_number || null,
+      quo_number:   quo_number || null,
       system_prompt,
-      voice_id: voice_id || process.env.ELEVENLABS_VOICE_ID,
-      greeting: greeting || 'Hello! Thanks for calling. How can I help you today?',
-      is_active: is_active !== false,
+      voice_id:     voice_id || process.env.ELEVENLABS_VOICE_ID,
+      greeting:     greeting || 'Hello! Thanks for calling. How can I help you today?',
+      is_active:    is_active !== false,
+      speaks_first: speaks_first !== false,
     });
     res.status(201).json(data);
   } catch (err) {
@@ -52,7 +53,7 @@ router.post('/', async (req, res) => {
 // PATCH /api/agent-configs/:id — update
 router.patch('/:id', async (req, res) => {
   if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid ID' });
-  const allowed = ['name', 'twilio_number', 'quo_number', 'system_prompt', 'voice_id', 'greeting', 'is_active'];
+  const allowed = ['name', 'twilio_number', 'quo_number', 'system_prompt', 'voice_id', 'greeting', 'is_active', 'speaks_first'];
   const fields = {};
   for (const key of allowed) {
     if (key in req.body) fields[key] = req.body[key];

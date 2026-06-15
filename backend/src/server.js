@@ -8,13 +8,14 @@ const { WebSocketServer } = require('ws');
 const cors = require('cors');
 const path = require('path');
 
-const incomingCallRoute = require('./routes/incoming-call');
-const agentConfigsRoute = require('./routes/agent-configs');
-const callsRoute        = require('./routes/calls');
-const leadsRoute        = require('./routes/leads');
-const tenantsRoute      = require('./routes/tenants');
-const paymentsRoute     = require('./routes/payments');
-const slackRoute        = require('./routes/slack');
+const incomingCallRoute  = require('./routes/incoming-call');
+const agentConfigsRoute  = require('./routes/agent-configs');
+const callsRoute         = require('./routes/calls');
+const leadsRoute         = require('./routes/leads');
+const tenantsRoute       = require('./routes/tenants');
+const paymentsRoute      = require('./routes/payments');
+const slackRoute         = require('./routes/slack');
+const knowledgeBaseRoute = require('./routes/knowledge-base');
 const CallSession       = require('./call-session');
 
 const app    = express();
@@ -31,13 +32,21 @@ app.use(express.urlencoded({ extended: false }));
 
 app.use(express.static(path.join(__dirname, '../../frontend')));
 
-app.use('/incoming-call',     incomingCallRoute);
-app.use('/api/agent-configs', agentConfigsRoute);
-app.use('/api/calls',         callsRoute);
-app.use('/api/leads',         leadsRoute);
-app.use('/api/tenants',       tenantsRoute);
-app.use('/api/payments',      paymentsRoute);
-app.use('/slack',             slackRoute);
+app.use('/incoming-call',       incomingCallRoute);
+// Lightweight config endpoint — exposes non-secret env settings to the frontend
+app.get('/api/config', (_req, res) => {
+  res.json({
+    summaryMinDurationSeconds: parseInt(process.env.SUMMARY_MIN_DURATION_SECONDS ?? '120', 10),
+  });
+});
+
+app.use('/api/agent-configs',   agentConfigsRoute);
+app.use('/api/calls',           callsRoute);
+app.use('/api/leads',           leadsRoute);
+app.use('/api/tenants',         tenantsRoute);
+app.use('/api/payments',        paymentsRoute);
+app.use('/api/knowledge-base',  knowledgeBaseRoute);
+app.use('/slack',               slackRoute);
 
 wss.on('connection', (ws, req) => {
   console.log(`[server] WebSocket connected — ${req.url}`);

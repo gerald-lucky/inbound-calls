@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/sachi/**)",
+      "PowerShell($paths = $env:PATH -split ';'; $paths | Where-Object { $_ -match 'node|npm|nvm' })",
+      "Read(//c//**)",
+      "PowerShell(supabase --version 2>&1)",
+      "WebSearch",
+      "WebFetch(domain:supabase.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:huggingface.co)",
+      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); require\\('./src/routes/calls'\\); require\\('./src/routes/incoming-call'\\); require\\('./src/services/call-logger'\\); require\\('./src/call-session'\\); console.log\\('All modules load OK'\\);\")",
+      "PowerShell(ngrok version 2>&1)",
+      "Bash(node -e ' *)"
+    ]
+  }
+}

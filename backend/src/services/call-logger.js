@@ -11,15 +11,16 @@ const supabase = createClient(
  * Insert a new call record when a call starts.
  * @returns {Promise<string>} The new call's UUID.
  */
-async function startCall({ callSid, agentConfigId, twilioNumber, callerNumber }) {
+async function startCall({ callSid, agentConfigId, twilioNumber, callerNumber, direction = 'inbound' }) {
   const { data, error } = await supabase
     .from('calls')
     .insert({
-      call_sid: callSid,
+      call_sid:        callSid,
       agent_config_id: agentConfigId || null,
-      twilio_number: twilioNumber || null,
-      caller_number: callerNumber,
-      started_at: new Date().toISOString(),
+      twilio_number:   twilioNumber  || null,
+      caller_number:   callerNumber,
+      started_at:      new Date().toISOString(),
+      direction,
     })
     .select('id')
     .single();
@@ -95,6 +96,34 @@ async function saveLead({ callId, agentConfigId, callerNumber, name, email, note
 }
 
 /**
+ * Save an AI-generated summary to a call record.
+ * @param {string} callId - our DB UUID
+ * @param {string} summary
+ */
+async function saveSummary(callId, summary) {
+  const { error } = await supabase
+    .from('calls')
+    .update({ summary })
+    .eq('id', callId);
+  if (error) console.error('[call-logger] saveSummary error:', error.message);
+}
+
+/**
+ * Save a Twilio recording URL to the call record identified by Twilio's CallSid.
+ * @param {string} callSid   - Twilio CallSid (e.g. "CAxxxx")
+ * @param {string} recordingUrl
+ */
+async function saveRecordingUrl(callSid, recordingUrl) {
+  const { error } = await supabase
+    .from('calls')
+    .update({ recording_url: recordingUrl })
+    .eq('call_sid', callSid);
+  if (error) {
+    console.error('[call-logger] saveRecordingUrl error:', error.message);
+  }
+}
+
+/**
  * List calls with optional filters.
  */
 async function listCalls({ agentConfigId, limit = 50, offset = 0 } = {}) {
@@ -103,6 +132,7 @@ async function listCalls({ agentConfigId, limit = 50, offset = 0 } = {}) {
     .select(`
       id, call_sid, twilio_number, caller_number,
       started_at, ended_at, duration_seconds, transcript,
+      direction, recording_url, summary,
       agent_configs (id, name)
     `)
     .order('started_at', { ascending: false })
@@ -128,6 +158,37 @@ async function getCall(id) {
     .single();
   if (error) throw new Error(error.message);
   return data;
+}
+
+/**
+ * Look up a call's DB id by Twilio CallSid.
+ * Returns null if not found.
+ */
+async function findCallBySid(callSid) {
+  if (!callSid) return null;
+  const { data } = await supabase
+    .from('calls')
+    .select('id')
+    .eq('call_sid', callSid)
+    .maybeSingle();
+  return data?.id || null;
+}
+
+/**
+ * Mark a call as ended (by Twilio status callback).
+ * Only updates if ended_at is not already set, so it won't clobber
+ * a record already closed by CallSession._teardown().
+ */
+async function finalizeCall(callSid, { durationSeconds } = {}) {
+  const { error } = await supabase
+    .from('calls')
+    .update({
+      ended_at:         new Date().toISOString(),
+      duration_seconds: durationSeconds || null,
+    })
+    .eq('call_sid', callSid)
+    .is('ended_at', null);
+  if (error) console.error('[call-logger] finalizeCall error:', error.message);
 }
 
 /**
@@ -173,8 +234,12 @@ async function deleteLead(id) {
 
 module.exports = {
   startCall,
+  findCallBySid,
+  finalizeCall,
   appendTranscript,
   endCall,
+  saveRecordingUrl,
+  saveSummary,
   saveLead,
   listCalls,
   getCall,

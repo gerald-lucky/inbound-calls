@@ -1,5 +1,9 @@
 'use strict';
 
+// ── App config (loaded once from backend) ────────────────────────────────────
+let _appConfig = { summaryMinDurationSeconds: 120 };
+fetch('/api/config').then((r) => r.json()).then((c) => { _appConfig = c; }).catch(() => {});
+
 // ── Tab navigation ────────────────────────────────────────────────────────────
 
 const navLinks = document.querySelectorAll('.nav-links a');
@@ -8,12 +12,13 @@ const tabs = document.querySelectorAll('.tab');
 function showTab(name) {
   tabs.forEach((t) => t.classList.toggle('active', t.id === `tab-${name}`));
   navLinks.forEach((a) => a.classList.toggle('active', a.dataset.tab === name));
-  if (name === 'dashboard') loadDashboard();
-  if (name === 'routing')   loadRouting();
-  if (name === 'calls')     loadCalls();
-  if (name === 'leads')     loadLeads();
-  if (name === 'tenants')  loadTenants();
-  if (name === 'payments') loadPayments();
+  if (name === 'dashboard')     loadDashboard();
+  if (name === 'agents')        loadAgents();
+  if (name === 'calls')         loadCalls();
+  if (name === 'leads')         loadLeads();
+  if (name === 'tenants')       loadTenants();
+  if (name === 'payments')      loadPayments();
+  if (name === 'knowledge-base') loadKnowledgeBase();
 }
 
 navLinks.forEach((a) =>
@@ -75,9 +80,8 @@ async function loadDashboard() {
   try {
     const calls = await apiFetch('/api/calls?limit=10');
     el.innerHTML = calls.length ? renderCallsTable(calls, true) : '<p class="empty">No calls yet.</p>';
-    el.querySelectorAll('.view-transcript').forEach((btn) => {
-      btn.addEventListener('click', () => openTranscript(btn.dataset.id));
-    });
+    el.querySelectorAll('.view-call').forEach((btn) =>
+      btn.addEventListener('click', () => openCallDetail(btn.dataset.id)));
   } catch (err) {
     el.innerHTML = `<p class="empty">Error: ${esc(err.message)}</p>`;
   }
@@ -85,26 +89,55 @@ async function loadDashboard() {
 
 document.getElementById('dash-refresh').addEventListener('click', loadDashboard);
 
-// ── Routing ───────────────────────────────────────────────────────────────────
+// ── Agents ────────────────────────────────────────────────────────────────────
 
 let _agentConfigs = [];
 
-async function loadRouting() {
+// Close all open action menus when clicking outside
+document.addEventListener('click', () => {
+  document.querySelectorAll('.action-menu.open').forEach((m) => m.classList.remove('open'));
+});
+
+async function loadAgents() {
   const el = document.getElementById('routing-list');
   el.innerHTML = '<p class="loading">Loading…</p>';
   try {
-    _agentConfigs = await apiFetch('/api/agent-configs');
+    [_agentConfigs] = await Promise.all([
+      apiFetch('/api/agent-configs'),
+    ]);
+
+    // Fetch KB doc counts per agent (best-effort)
+    let kbCounts = {};
+    try {
+      const docs = await apiFetch('/api/knowledge-base');
+      docs.forEach((d) => {
+        if (d.agent_config_id) kbCounts[d.agent_config_id] = (kbCounts[d.agent_config_id] || 0) + 1;
+      });
+    } catch {}
+
     if (!_agentConfigs.length) {
       el.innerHTML = '<p class="empty">No agents configured yet. Click "+ New Agent" to get started.</p>';
-      return;
+    } else {
+      el.innerHTML = renderAgentsTable(_agentConfigs, kbCounts);
+
+      // Three-dots dropdown toggle
+      el.addEventListener('click', (e) => {
+        const trigger = e.target.closest('.action-menu-trigger');
+        if (!trigger) return;
+        e.stopPropagation();
+        const menu = trigger.closest('.action-menu');
+        const isOpen = menu.classList.contains('open');
+        document.querySelectorAll('.action-menu.open').forEach((m) => m.classList.remove('open'));
+        if (!isOpen) menu.classList.add('open');
+      });
+
+      el.querySelectorAll('.edit-config').forEach((btn) =>
+        btn.addEventListener('click', () => { closeAllMenus(); openConfigModal(btn.dataset.id); }));
+      el.querySelectorAll('.delete-config').forEach((btn) =>
+        btn.addEventListener('click', () => { closeAllMenus(); deleteConfig(btn.dataset.id, btn.dataset.name); }));
+      el.querySelectorAll('.toggle-config').forEach((btn) =>
+        btn.addEventListener('click', () => { closeAllMenus(); toggleConfig(btn.dataset.id, btn.dataset.active === 'true'); }));
     }
-    el.innerHTML = renderRoutingTable(_agentConfigs);
-    el.querySelectorAll('.edit-config').forEach((btn) =>
-      btn.addEventListener('click', () => openConfigModal(btn.dataset.id)));
-    el.querySelectorAll('.delete-config').forEach((btn) =>
-      btn.addEventListener('click', () => deleteConfig(btn.dataset.id, btn.dataset.name)));
-    el.querySelectorAll('.toggle-config').forEach((btn) =>
-      btn.addEventListener('click', () => toggleConfig(btn.dataset.id, btn.dataset.active === 'true')));
   } catch (err) {
     el.innerHTML = `<p class="empty">Error: ${esc(err.message)}</p>`;
   }
@@ -112,27 +145,45 @@ async function loadRouting() {
   populateConfigFilter('leads-filter-config');
 }
 
-function renderRoutingTable(configs) {
-  const rows = configs.map((c) => `
+function closeAllMenus() {
+  document.querySelectorAll('.action-menu.open').forEach((m) => m.classList.remove('open'));
+}
+
+function renderAgentsTable(configs, kbCounts = {}) {
+  const rows = configs.map((c) => {
+    const kbCount = kbCounts[c.id] || 0;
+    const kbBadge = kbCount
+      ? `<span class="badge badge-blue">${kbCount} doc${kbCount !== 1 ? 's' : ''}</span>`
+      : '<span class="badge badge-gray">None</span>';
+    const sfBadge = c.speaks_first !== false
+      ? '<span class="badge badge-green">Bot first</span>'
+      : '<span class="badge badge-gray">Caller first</span>';
+    return `
     <tr>
       <td><strong>${esc(c.name)}</strong></td>
       <td class="number-cell">${esc(c.quo_number || '—')}<span class="arrow">→</span>${esc(c.twilio_number)}</td>
       <td><span class="badge ${c.is_active ? 'badge-green' : 'badge-gray'}">${c.is_active ? 'Active' : 'Paused'}</span></td>
+      <td>${sfBadge}</td>
+      <td>${kbBadge}</td>
       <td>${c.total_calls ?? 0}</td>
       <td>${fmtDuration(c.avg_duration_seconds)}</td>
       <td>
-        <button class="btn-link edit-config" data-id="${c.id}">Edit</button>
-        &nbsp;
-        <button class="btn-secondary toggle-config" data-id="${c.id}" data-active="${c.is_active}" style="font-size:.75rem;padding:.2rem .55rem">
-          ${c.is_active ? 'Pause' : 'Resume'}
-        </button>
-        &nbsp;
-        <button class="btn-danger delete-config" data-id="${c.id}" data-name="${esc(c.name)}">Delete</button>
+        <div class="action-menu">
+          <button class="btn-icon action-menu-trigger" title="Actions">&#8942;</button>
+          <div class="action-menu-dropdown">
+            <button class="menu-item edit-config" data-id="${c.id}">Edit</button>
+            <button class="menu-item toggle-config" data-id="${c.id}" data-active="${c.is_active}">
+              ${c.is_active ? 'Pause' : 'Resume'}
+            </button>
+            <button class="menu-item menu-danger delete-config" data-id="${c.id}" data-name="${esc(c.name)}">Delete</button>
+          </div>
+        </div>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   return `<table>
     <thead><tr>
-      <th>Agent</th><th>Quo → Twilio</th><th>Status</th><th>Calls</th><th>Avg Duration</th><th></th>
+      <th>Agent</th><th>Quo → Twilio</th><th>Status</th><th>Opens with</th><th>Knowledge Base</th><th>Calls</th><th>Avg Duration</th><th></th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
@@ -146,7 +197,6 @@ function populateConfigFilter(selectId) {
   sel.value = current;
 }
 
-// New agent button
 document.getElementById('new-config-btn').addEventListener('click', () => openConfigModal(null));
 
 function openConfigModal(id) {
@@ -159,14 +209,15 @@ function openConfigModal(id) {
     const cfg = _agentConfigs.find((c) => c.id === id);
     if (!cfg) return;
     document.getElementById('modal-title').textContent = 'Edit Agent';
-    document.getElementById('config-id').value   = cfg.id;
-    document.getElementById('f-name').value      = cfg.name;
-    document.getElementById('f-twilio').value    = cfg.twilio_number;
-    document.getElementById('f-quo').value       = cfg.quo_number || '';
-    document.getElementById('f-prompt').value    = cfg.system_prompt;
-    document.getElementById('f-greeting').value  = cfg.greeting;
-    document.getElementById('f-voice').value     = cfg.voice_id;
-    document.getElementById('f-active').value    = String(cfg.is_active);
+    document.getElementById('config-id').value          = cfg.id;
+    document.getElementById('f-name').value             = cfg.name;
+    document.getElementById('f-twilio').value           = cfg.twilio_number;
+    document.getElementById('f-quo').value              = cfg.quo_number || '';
+    document.getElementById('f-prompt').value           = cfg.system_prompt;
+    document.getElementById('f-greeting').value         = cfg.greeting;
+    document.getElementById('f-voice').value            = cfg.voice_id;
+    document.getElementById('f-speaks-first').value     = String(cfg.speaks_first !== false);
+    document.getElementById('f-active').value           = String(cfg.is_active);
   } else {
     document.getElementById('modal-title').textContent = 'New Agent';
   }
@@ -194,6 +245,7 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
     system_prompt: document.getElementById('f-prompt').value.trim(),
     greeting:      document.getElementById('f-greeting').value.trim() || null,
     voice_id:      document.getElementById('f-voice').value.trim() || null,
+    speaks_first:  document.getElementById('f-speaks-first').value === 'true',
     is_active:     document.getElementById('f-active').value === 'true',
   };
 
@@ -206,7 +258,7 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
       await apiFetch('/api/agent-configs', { method: 'POST', body: JSON.stringify(payload) });
     }
     closeConfigModal();
-    loadRouting();
+    loadAgents();
   } catch (err) {
     alert(`Save failed: ${err.message}`);
   } finally {
@@ -218,7 +270,7 @@ async function deleteConfig(id, name) {
   if (!confirm(`Delete agent "${name}"? Existing call logs will be kept.`)) return;
   try {
     await apiFetch(`/api/agent-configs/${id}`, { method: 'DELETE', raw: true });
-    loadRouting();
+    loadAgents();
   } catch (err) {
     alert(`Delete failed: ${err.message}`);
   }
@@ -230,7 +282,7 @@ async function toggleConfig(id, currentlyActive) {
       method: 'PATCH',
       body: JSON.stringify({ is_active: !currentlyActive }),
     });
-    loadRouting();
+    loadAgents();
   } catch (err) {
     alert(`Update failed: ${err.message}`);
   }
@@ -246,31 +298,62 @@ async function loadCalls() {
   try {
     const calls = await apiFetch(`/api/calls${qs}`);
     el.innerHTML = calls.length ? renderCallsTable(calls) : '<p class="empty">No calls yet.</p>';
-    el.querySelectorAll('.view-transcript').forEach((btn) =>
-      btn.addEventListener('click', () => openTranscript(btn.dataset.id)));
+    el.querySelectorAll('.view-call').forEach((btn) =>
+      btn.addEventListener('click', () => openCallDetail(btn.dataset.id)));
   } catch (err) {
     el.innerHTML = `<p class="empty">Error: ${esc(err.message)}</p>`;
   }
 }
 
-function renderCallsTable(calls, compact = false) {
-  const rows = calls.map((c) => `
-    <tr>
-      ${!compact ? `<td><span class="badge badge-blue">${esc(c.agent_configs?.name || '—')}</span></td>` : ''}
-      <td class="number-cell">${esc(c.caller_number)}</td>
-      <td>${fmtTime(c.started_at)}</td>
-      <td>${fmtDuration(c.duration_seconds)}</td>
-      <td>
-        ${Array.isArray(c.transcript) && c.transcript.length
-          ? `<button class="btn-link view-transcript" data-id="${c.id}">View (${c.transcript.length} msgs)</button>`
-          : '<span class="empty">—</span>'}
-      </td>
-    </tr>`).join('');
+function callStatusBadge(c) {
+  if (!c.ended_at)           return '<span class="badge badge-blue">In Progress</span>';
+  if (!c.duration_seconds)   return '<span class="badge badge-gray">No Answer</span>';
+  return                            '<span class="badge badge-green">Completed</span>';
+}
 
-  return `<table>
+function renderCallsTable(calls, compact = false) {
+  if (compact) {
+    const rows = calls.map((c) => `
+      <tr>
+        <td class="number-cell">${esc(c.caller_number)}</td>
+        <td><span class="badge badge-blue">${esc(c.agent_configs?.name || '—')}</span></td>
+        <td>${fmtTime(c.started_at)}</td>
+        <td>${fmtDuration(c.duration_seconds)}</td>
+        <td><button class="btn-link view-call" data-id="${c.id}">View</button></td>
+      </tr>`).join('');
+    return `<table>
+      <thead><tr><th>Caller</th><th>Agent</th><th>Time</th><th>Duration</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  const rows = calls.map((c) => {
+    const from = c.direction === 'outbound' ? c.twilio_number  : c.caller_number;
+    const to   = c.direction === 'outbound' ? c.caller_number  : c.twilio_number;
+    const dir  = c.direction === 'outbound'
+      ? '<span class="badge badge-purple">Out</span>'
+      : '<span class="badge badge-gray">In</span>';
+    const shortSid = c.call_sid ? c.call_sid.slice(0, 10) + '…' : c.id.slice(0, 8);
+    return `
+      <tr>
+        <td class="number-cell mono-sm">${esc(shortSid)}</td>
+        <td class="number-cell">${esc(from || '—')}</td>
+        <td class="number-cell">${esc(to   || '—')}</td>
+        <td>${dir}</td>
+        <td><span class="badge badge-blue">${esc(c.agent_configs?.name || '—')}</span></td>
+        <td>${callStatusBadge(c)}</td>
+        <td>${fmtDuration(c.duration_seconds)}</td>
+        <td>${fmtTime(c.started_at)}</td>
+        <td>${fmtTime(c.ended_at)}</td>
+        <td><button class="btn-icon view-call" data-id="${c.id}" title="View details">&#128065;</button></td>
+      </tr>`;
+  }).join('');
+
+  return `<table class="table-wide">
     <thead><tr>
-      ${!compact ? '<th>Agent</th>' : ''}
-      <th>Caller</th><th>Time</th><th>Duration</th><th>Transcript</th>
+      <th>Call ID</th><th>From</th><th>To</th><th>Dir</th>
+      <th>Agent</th><th>Status</th><th>Duration</th>
+      <th>Started</th><th>Ended</th><th></th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
@@ -279,46 +362,191 @@ function renderCallsTable(calls, compact = false) {
 document.getElementById('calls-refresh').addEventListener('click', loadCalls);
 document.getElementById('calls-filter-config').addEventListener('change', loadCalls);
 
-// ── Transcript drawer ─────────────────────────────────────────────────────────
+// ── Test Call dialog ──────────────────────────────────────────────────────────
 
-async function openTranscript(callId) {
-  const backdrop = document.getElementById('transcript-backdrop');
-  const body     = document.getElementById('transcript-body');
-  const meta     = document.getElementById('drawer-meta');
-  const title    = document.getElementById('drawer-title');
+document.getElementById('test-call-btn').addEventListener('click', openTestCallModal);
 
-  body.innerHTML = '<p class="loading">Loading…</p>';
+async function openTestCallModal() {
+  const backdrop = document.getElementById('test-call-backdrop');
+  const sel      = document.getElementById('tc-agent');
+  const status   = document.getElementById('tc-status');
+
+  document.getElementById('tc-phone').value = '';
+  status.hidden    = true;
+  status.textContent = '';
+
+  try {
+    const configs = await apiFetch('/api/agent-configs');
+    sel.innerHTML = '<option value="">Select agent…</option>' +
+      configs.filter((c) => c.is_active).map((c) =>
+        `<option value="${c.id}">${esc(c.name)} — ${esc(c.twilio_number)}</option>`
+      ).join('');
+  } catch {
+    sel.innerHTML = '<option value="">Failed to load agents</option>';
+  }
+
+  backdrop.hidden = false;
+}
+
+function closeTestCallModal() {
+  document.getElementById('test-call-backdrop').hidden = true;
+}
+
+document.getElementById('tc-close').addEventListener('click', closeTestCallModal);
+document.getElementById('tc-cancel').addEventListener('click', closeTestCallModal);
+document.getElementById('test-call-backdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeTestCallModal();
+});
+
+document.getElementById('tc-call').addEventListener('click', async () => {
+  const to            = document.getElementById('tc-phone').value.trim();
+  const agentConfigId = document.getElementById('tc-agent').value;
+  const status        = document.getElementById('tc-status');
+  const btn           = document.getElementById('tc-call');
+
+  if (!to || !agentConfigId) {
+    alert('Phone number and agent are required.');
+    return;
+  }
+
+  btn.disabled      = true;
+  status.hidden     = false;
+  status.className  = 'tc-status';
+  status.textContent = 'Initiating call…';
+
+  try {
+    const result = await apiFetch('/api/calls/outbound', {
+      method: 'POST',
+      body: JSON.stringify({ to, agentConfigId }),
+    });
+    status.textContent = `Call started — SID: ${result.callSid}  (${result.status})`;
+    status.classList.add('tc-success');
+    setTimeout(() => { closeTestCallModal(); loadCalls(); }, 2500);
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
+    status.classList.add('tc-error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Call Detail dialog ────────────────────────────────────────────────────────
+
+let _callDetailData = null;
+
+async function openCallDetail(callId) {
+  const backdrop = document.getElementById('call-detail-backdrop');
+  document.getElementById('cd-body').innerHTML    = '<p class="loading">Loading…</p>';
+  document.getElementById('cd-overview').innerHTML = '';
+  document.getElementById('cd-call-id').textContent = 'Call Details';
+  // Reset tabs; annotate Summary tab with threshold
+  const _minS   = _appConfig.summaryMinDurationSeconds ?? 120;
+  const _minFmt = _minS >= 60 ? `${Math.floor(_minS / 60)}m` : `${_minS}s`;
+  document.querySelectorAll('.cd-tab').forEach((t) => {
+    t.classList.toggle('active', t.dataset.tab === 'transcript');
+    if (t.dataset.tab === 'summary') t.innerHTML = `Summary <span class="cd-tab-hint">&ge; ${_minFmt}</span>`;
+  });
   backdrop.hidden = false;
 
   try {
     const call = await apiFetch(`/api/calls/${callId}`);
-    title.textContent = `Transcript — ${esc(call.caller_number)}`;
-    meta.textContent  = `${fmtTime(call.started_at)}  ·  ${fmtDuration(call.duration_seconds)}  ·  ${esc(call.agent_configs?.name || 'No agent')}`;
+    _callDetailData = call;
 
-    if (!call.transcript?.length) {
-      body.innerHTML = '<p class="empty">No transcript recorded.</p>';
-      return;
-    }
+    const sid = call.call_sid || call.id;
+    document.getElementById('cd-call-id').textContent =
+      sid.length > 20 ? sid.slice(0, 12) + '…' + sid.slice(-4) : sid;
 
-    body.innerHTML = call.transcript.map((entry) => {
-      const cls = entry.role === 'caller' ? 't-caller' : 't-agent';
-      const ts  = entry.ts ? `<div class="t-ts">${fmtTime(entry.ts)}</div>` : '';
-      return `${ts}<div class="t-bubble ${cls}">${esc(entry.text)}</div>`;
-    }).join('');
+    const from = call.direction === 'outbound' ? call.twilio_number : call.caller_number;
+    const to   = call.direction === 'outbound' ? call.caller_number : call.twilio_number;
 
-    // Scroll to bottom
-    body.scrollTop = body.scrollHeight;
+    document.getElementById('cd-overview').innerHTML = `
+      <div class="cd-overview-grid">
+        ${cdKv('Call ID',    `<span class="mono-sm">${esc(call.call_sid || '—')}</span>`)}
+        ${cdKv('Direction',  call.direction === 'outbound'
+          ? '<span class="badge badge-purple">Outbound</span>'
+          : '<span class="badge badge-gray">Inbound</span>')}
+        ${cdKv('Status',     callStatusBadge(call))}
+        ${cdKv('Agent',      esc(call.agent_configs?.name || '—'))}
+        ${cdKv('From',       `<span class="mono-sm">${esc(from || '—')}</span>`)}
+        ${cdKv('To',         `<span class="mono-sm">${esc(to   || '—')}</span>`)}
+        ${cdKv('Duration',   fmtDuration(call.duration_seconds))}
+        ${cdKv('Started',    fmtTime(call.started_at))}
+        ${cdKv('Ended',      fmtTime(call.ended_at))}
+        ${cdKv('Recording',  call.recording_url
+          ? '<span class="badge badge-green">Available</span>'
+          : '<span class="badge badge-gray">None</span>')}
+      </div>`;
+
+    renderCdTab('transcript', call);
   } catch (err) {
-    body.innerHTML = `<p class="empty">Failed to load: ${esc(err.message)}</p>`;
+    document.getElementById('cd-body').innerHTML =
+      `<p class="empty">Failed to load: ${esc(err.message)}</p>`;
   }
 }
 
-document.getElementById('drawer-close').addEventListener('click', () => {
-  document.getElementById('transcript-backdrop').hidden = true;
+function cdKv(label, value) {
+  return `<div class="cd-kv">
+    <div class="cd-kv-label">${label}</div>
+    <div class="cd-kv-value">${value}</div>
+  </div>`;
+}
+
+function renderCdTab(tab, call) {
+  const body = document.getElementById('cd-body');
+
+  if (tab === 'transcript') {
+    if (!call.transcript?.length) {
+      body.innerHTML = '<p class="empty">No transcript recorded for this call.</p>';
+      return;
+    }
+    body.innerHTML = call.transcript.map((entry) => {
+      const isAgent = entry.role === 'agent';
+      const ts = entry.ts ? `<span class="t-ts">${fmtTime(entry.ts)}</span>` : '';
+      return `
+        <div class="t-row ${isAgent ? 't-row-agent' : 't-row-caller'}">
+          <div class="t-speaker">${isAgent ? 'Agent' : 'User'}${ts}</div>
+          <div class="t-bubble ${isAgent ? 't-agent' : 't-caller'}">${esc(entry.text)}</div>
+        </div>`;
+    }).join('');
+    body.scrollTop = body.scrollHeight;
+    return;
+  }
+
+  if (tab === 'recording') {
+    if (!call.recording_url) {
+      body.innerHTML = '<p class="empty">No recording available. Recordings appear a few seconds after the call ends via Twilio callback.</p>';
+      return;
+    }
+    body.innerHTML = `
+      <div class="cd-recording">
+        <p class="cd-recording-meta">${fmtTime(call.started_at)} &nbsp;·&nbsp; ${fmtDuration(call.duration_seconds)}</p>
+        <audio controls src="/api/calls/${call.id}/recording"></audio>
+      </div>`;
+    return;
+  }
+
+  if (tab === 'summary') {
+    body.innerHTML = call.summary
+      ? `<div class="cd-summary">${esc(call.summary)}</div>`
+      : '<p class="empty">No summary available.</p>';
+  }
+}
+
+document.getElementById('cd-tabs').addEventListener('click', (e) => {
+  const tab = e.target.closest('.cd-tab')?.dataset.tab;
+  if (!tab || !_callDetailData) return;
+  document.querySelectorAll('.cd-tab').forEach((t) =>
+    t.classList.toggle('active', t.dataset.tab === tab));
+  renderCdTab(tab, _callDetailData);
 });
 
-document.getElementById('transcript-backdrop').addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) document.getElementById('transcript-backdrop').hidden = true;
+document.getElementById('cd-close').addEventListener('click', () => {
+  document.getElementById('call-detail-backdrop').hidden = true;
+});
+
+document.getElementById('call-detail-backdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget)
+    document.getElementById('call-detail-backdrop').hidden = true;
 });
 
 // ── Leads ─────────────────────────────────────────────────────────────────────
@@ -586,13 +814,197 @@ document.getElementById('payment-form').addEventListener('submit', async (e) => 
   }
 });
 
+// ── Knowledge Base ────────────────────────────────────────────────────────────
+
+let _kbPollingTimers = {};
+
+async function loadKnowledgeBase() {
+  const el       = document.getElementById('kb-list');
+  const configId = document.getElementById('kb-filter-config').value;
+  const qs       = configId ? `?agentConfigId=${configId}` : '';
+
+  el.innerHTML = '<p class="loading">Loading…</p>';
+  try {
+    const docs = await apiFetch(`/api/knowledge-base${qs}`);
+    if (!docs.length) {
+      el.innerHTML = '<p class="empty">No documents yet. Click "+ Upload Document" to add content to the knowledge base.</p>';
+      return;
+    }
+
+    const rows = docs.map((d) => {
+      const statusBadge = d.status === 'ready'      ? 'badge-green'
+                        : d.status === 'processing'  ? 'badge-blue'
+                        : 'badge-red';
+      const chunkText = d.status === 'ready' ? `${d.chunk_count} chunk${d.chunk_count !== 1 ? 's' : ''}` : '—';
+      const typeLabel = (d.file_type || '').includes('pdf') ? 'PDF' : 'TXT';
+      return `
+        <tr id="kb-row-${d.id}">
+          <td><strong>${esc(d.filename)}</strong></td>
+          <td><span class="badge badge-gray">${typeLabel}</span></td>
+          <td>${chunkText}</td>
+          <td><span class="badge ${statusBadge}" id="kb-status-${d.id}">${esc(d.status)}</span></td>
+          <td>${fmtDate(d.created_at)}</td>
+          <td><button class="btn-danger delete-doc" data-id="${d.id}" data-name="${esc(d.filename)}">Delete</button></td>
+        </tr>`;
+    }).join('');
+
+    el.innerHTML = `<table>
+      <thead><tr>
+        <th>Filename</th><th>Type</th><th>Chunks</th><th>Status</th><th>Uploaded</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+    el.querySelectorAll('.delete-doc').forEach((btn) =>
+      btn.addEventListener('click', () => deleteDocument(btn.dataset.id, btn.dataset.name)));
+
+    // Start polling for any docs still processing
+    docs.filter((d) => d.status === 'processing').forEach((d) => pollDocStatus(d.id));
+  } catch (err) {
+    el.innerHTML = `<p class="empty">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+function pollDocStatus(docId) {
+  if (_kbPollingTimers[docId]) return; // already polling
+  _kbPollingTimers[docId] = setInterval(async () => {
+    try {
+      const doc = await apiFetch(`/api/knowledge-base/${docId}`);
+      if (!doc || doc.status !== 'processing') {
+        clearInterval(_kbPollingTimers[docId]);
+        delete _kbPollingTimers[docId];
+        // Refresh the row in-place
+        const badge = document.getElementById(`kb-status-${docId}`);
+        if (badge) {
+          const cls = doc?.status === 'ready' ? 'badge-green' : 'badge-red';
+          badge.className = `badge ${cls}`;
+          badge.textContent = doc?.status || 'error';
+
+          // Update chunk count cell too
+          const row = document.getElementById(`kb-row-${docId}`);
+          if (row && doc?.status === 'ready') {
+            row.cells[2].textContent = `${doc.chunk_count} chunk${doc.chunk_count !== 1 ? 's' : ''}`;
+          }
+        }
+      }
+    } catch {
+      clearInterval(_kbPollingTimers[docId]);
+      delete _kbPollingTimers[docId];
+    }
+  }, 3000);
+}
+
+async function deleteDocument(id, name) {
+  if (!confirm(`Delete "${name}"? This will remove the file and all its embeddings.`)) return;
+  try {
+    await apiFetch(`/api/knowledge-base/${id}`, { method: 'DELETE', raw: true });
+    clearInterval(_kbPollingTimers[id]);
+    delete _kbPollingTimers[id];
+    loadKnowledgeBase();
+  } catch (err) {
+    alert(`Delete failed: ${err.message}`);
+  }
+}
+
+function populateKbAgentFilter() {
+  const sel     = document.getElementById('kb-filter-config');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All agents</option>' +
+    _agentConfigs.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  sel.value = current;
+
+  const modalSel  = document.getElementById('kb-agent-select');
+  const mCurrent  = modalSel.value;
+  modalSel.innerHTML = '<option value="">Select agent…</option>' +
+    _agentConfigs.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  modalSel.value = mCurrent;
+}
+
+document.getElementById('kb-refresh').addEventListener('click', loadKnowledgeBase);
+document.getElementById('kb-filter-config').addEventListener('change', loadKnowledgeBase);
+document.getElementById('new-doc-btn').addEventListener('click', openKbModal);
+
+function openKbModal() {
+  populateKbAgentFilter();
+  document.getElementById('kb-form').reset();
+  document.getElementById('kb-file-name').textContent = '';
+  document.getElementById('kb-modal-backdrop').hidden = false;
+}
+
+function closeKbModal() {
+  document.getElementById('kb-modal-backdrop').hidden = true;
+}
+
+document.getElementById('kb-modal-close').addEventListener('click', closeKbModal);
+document.getElementById('kb-modal-cancel').addEventListener('click', closeKbModal);
+document.getElementById('kb-modal-backdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeKbModal();
+});
+
+// Drag-and-drop + click-to-browse for file input
+const dropZone   = document.getElementById('kb-drop-zone');
+const fileInput  = document.getElementById('kb-file-input');
+const fileNameEl = document.getElementById('kb-file-name');
+
+dropZone.addEventListener('click', () => fileInput.click());
+
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropZone.classList.add('drag-over');
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) {
+    fileInput.files = e.dataTransfer.files;
+    fileNameEl.textContent = e.dataTransfer.files[0].name;
+  }
+});
+
+fileInput.addEventListener('change', () => {
+  fileNameEl.textContent = fileInput.files[0]?.name || '';
+});
+
+document.getElementById('kb-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const agentConfigId = document.getElementById('kb-agent-select').value;
+  const file          = fileInput.files[0];
+
+  if (!agentConfigId) { alert('Please select an agent.'); return; }
+  if (!file)          { alert('Please select a file.'); return; }
+
+  const btn = document.getElementById('kb-upload-btn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading…';
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('agentConfigId', agentConfigId);
+
+    const res = await fetch('/api/knowledge-base/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    closeKbModal();
+    loadKnowledgeBase();
+  } catch (err) {
+    alert(`Upload failed: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+  }
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
-// Load routing data early so filter dropdowns are populated when switching tabs
+// Load agent configs early so filter dropdowns are populated when switching tabs
 apiFetch('/api/agent-configs').then((data) => {
   _agentConfigs = data || [];
   populateConfigFilter('calls-filter-config');
   populateConfigFilter('leads-filter-config');
+  populateKbAgentFilter();
 }).catch(() => {});
 
 // Load tenants early so the payment filter and modal dropdown are populated
