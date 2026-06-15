@@ -11,6 +11,20 @@ const { PSA_SYSTEM_PROMPT } = require('../services/psa-persona');
 const upload    = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ── Diagnostics ───────────────────────────────────────────────────────────────
+
+router.get('/test-embed', async (req, res) => {
+  try {
+    console.log('[knowledge/test-embed] Testing embed edge function…');
+    const embeddings = await knowledge.embedTexts(['hello world']);
+    console.log('[knowledge/test-embed] Success — got embedding length:', embeddings[0]?.length);
+    res.json({ ok: true, dims: embeddings[0]?.length, sample: embeddings[0]?.slice(0, 5) });
+  } catch (err) {
+    console.error('[knowledge/test-embed] FAILED:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── Documents ─────────────────────────────────────────────────────────────────
 
 router.get('/documents', async (req, res) => {
@@ -99,8 +113,7 @@ router.post('/chat', async (req, res) => {
         sources = chunks.map(c => ({ content: c.content.slice(0, 120) + '…', similarity: Number(c.similarity).toFixed(2) }));
       }
     } catch (kErr) {
-      // Knowledge search may fail if OPENAI_API_KEY is not yet set — degrade gracefully
-      console.warn('[knowledge/chat] search unavailable:', kErr.message);
+      console.warn('[knowledge/chat] knowledge search unavailable:', kErr.message);
     }
 
     const systemPrompt =

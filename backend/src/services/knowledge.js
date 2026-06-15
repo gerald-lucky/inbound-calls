@@ -159,4 +159,4 @@ async function deleteDocument(id) {
   if (error) throw new Error(error.message);
 }
 
-module.exports = { ingestDocument, searchKnowledge, listDocuments, deleteDocument, chunkText };
+module.exports = { ingestDocument, searchKnowledge, listDocuments, deleteDocument, chunkText, embedTexts };
