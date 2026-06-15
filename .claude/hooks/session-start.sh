@@ -8,3 +8,6 @@ fi
 
 cd "$CLAUDE_PROJECT_DIR/backend"
 npm install
+
+# Print full vulnerability details (|| true so hook doesn't fail on findings)
+npm audit || true
