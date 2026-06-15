@@ -67,16 +67,33 @@ function chunkText(text) {
 }
 
 // ── Embedding via Supabase Edge Function ──────────────────────────────────────
-// Uses the built-in gte-small model (384 dimensions, no extra API key needed).
-// Deploy the edge function once with: supabase functions deploy embed
+// Uses the gte-small model (384 dimensions, no extra API key needed).
+//
+// SETUP REQUIRED (one time):
+//   1. Supabase Dashboard → Edge Functions → New Function → name it "embed"
+//   2. Paste the contents of supabase/functions/embed/index.ts
+//   3. Click Deploy
+//
+// The function must be deployed before ingestion or search will work.
 
 async function embedTexts(texts) {
   const { data, error } = await supabase.functions.invoke('embed', {
     body: { input: texts },
   });
 
-  if (error) throw new Error(`Embedding failed: ${error.message}`);
-  if (!data?.embeddings) throw new Error('Embedding function returned no data.');
+  if (error) {
+    console.error('[knowledge] embed function error — is the edge function deployed?', error);
+    throw new Error(
+      `Embedding failed: ${error.message}. ` +
+      'Make sure the "embed" edge function is deployed in your Supabase dashboard ' +
+      '(Edge Functions → New Function → paste supabase/functions/embed/index.ts → Deploy).'
+    );
+  }
+
+  if (!data?.embeddings) {
+    console.error('[knowledge] embed function returned unexpected response:', data);
+    throw new Error('Embedding function returned no data. Check the edge function logs in your Supabase dashboard.');
+  }
 
   return data.embeddings;
 }
