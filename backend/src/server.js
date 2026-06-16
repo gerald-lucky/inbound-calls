@@ -17,6 +17,7 @@ const paymentsRoute      = require('./routes/payments');
 const slackRoute         = require('./routes/slack');
 const knowledgeBaseRoute = require('./routes/knowledge-base');
 const CallSession       = require('./call-session');
+const { warmup: warmupEmbedding } = require('./services/embedding');
 
 const app    = express();
 const server = http.createServer(app);
@@ -63,4 +64,10 @@ server.listen(PORT, () => {
   console.log(`[server] v2 — Listening on port ${PORT}`);
   console.log(`[server] Webhook: POST ${process.env.SERVER_URL || `http://localhost:${PORT}`}/incoming-call`);
   console.log(`[server] Admin UI: ${process.env.SERVER_URL || `http://localhost:${PORT}`}/`);
+
+  // Pre-load the embedding model so it's ready before the first upload.
+  // Runs in the background — server accepts traffic immediately.
+  warmupEmbedding()
+    .then(() => console.log('[server] Embedding model pre-loaded'))
+    .catch((err) => console.error('[server] Embedding warmup failed (will retry on first upload):', err.message));
 });
