@@ -173,6 +173,10 @@ class CallSession {
     this._abortController = new AbortController();
     const { signal } = this._abortController;
 
+    // Pre-open TTS WebSocket immediately so it's ready when the first sentence arrives.
+    // Runs in parallel with the RAG search below, saving the WS handshake round-trip.
+    this._tts.connect().catch(() => {});
+
     // Per-utterance RAG: emit a hold phrase while we search, then pass context to LLM
     await this._llm.injectUtteranceContext(text, signal, () => this._speakSentence('Let me check that for you.'));
 

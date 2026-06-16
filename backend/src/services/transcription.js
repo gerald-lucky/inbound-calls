@@ -4,7 +4,7 @@ const { EventEmitter } = require('events');
 
 const SCRIBE_URL        = 'https://api.elevenlabs.io/v1/speech-to-text';
 const SAMPLE_RATE       = 8000;
-const SILENCE_MS        = 1000;                  // flush after 1 s of silence
+const SILENCE_MS        = 600;                   // flush after 600 ms of silence
 const MIN_SPEECH_BYTES  = SAMPLE_RATE * 0.3;    // ignore clips shorter than 300 ms
 const SILENCE_RMS_THRESHOLD = 1500;             // raised: phone calls have background noise + agent echo
 const MIN_BARGE_FRAMES  = 5;                    // require ~100ms of sustained speech before barge-in fires

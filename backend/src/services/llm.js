@@ -177,7 +177,7 @@ class LLMService extends EventEmitter {
       this._ragContext           ? `\n\n${this._ragContext}`           : '',
       this._utteranceRagContext  ? `\n\n${this._utteranceRagContext}`  : '',
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
-      '\nYou are multilingual. You speak English, Spanish, Hindi, Punjabi, Gujarati, Bengali, Tamil, Telugu, Urdu, and Marathi fluently. If the caller speaks any of these languages, asks if you speak their language, or asks you to switch languages, immediately switch and continue the entire conversation in that language. Confirm warmly in that language (e.g. in Hindi: "हाँ, मैं हिंदी में बात कर सकती हूँ।"). Stay in that language for the rest of the call once switched.' +
+      '\nYou speak English and Spanish only. If the caller speaks Spanish, switch to Spanish immediately and continue the entire call in Spanish. If the caller speaks any other language, politely inform them in English that you can only assist in English or Spanish, and ask which they prefer.' +
       '\nWhenever you are about to call any tool, first say a brief hold phrase in whatever language you are speaking — then call the tool.' +
       '\nWhen a caller spells out their name letter by letter (e.g. "J-O-S-E" or "M, A, R, I, A"), reconstruct the full name from those letters and pass it to the lookup tool — do not pass the individual letters.' +
       '\nIf a caller gives their name and the lookup fails, ask them to spell it letter by letter. After they spell it, attempt the lookup again with the reconstructed spelling.' +
