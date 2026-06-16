@@ -1,6 +1,7 @@
 'use strict';
 
 const { createClient } = require('@supabase/supabase-js');
+const { pipeline }     = require('@xenova/transformers');
 
 const CHUNK_TOKENS   = 400; // ~300 words per chunk
 const OVERLAP_TOKENS = 50;  // ~1–2 sentence overlap
@@ -9,6 +10,19 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
 );
+
+// ── Local embedding model (gte-small, 384 dimensions) ─────────────────────────
+// Model is downloaded once on first use (~30 MB) and cached in node_modules/.cache
+
+let _embedder = null;
+async function getEmbedder() {
+  if (!_embedder) {
+    console.log('[knowledge] Loading gte-small embedding model (first run may take a moment)…');
+    _embedder = await pipeline('feature-extraction', 'Xenova/gte-small');
+    console.log('[knowledge] Embedding model ready.');
+  }
+  return _embedder;
+}
 
 // ── Chunking ──────────────────────────────────────────────────────────────────
 // Rough token estimate: 1 token ≈ 4 characters
@@ -66,36 +80,18 @@ function chunkText(text) {
   return result.filter(c => c.length > 30);
 }
 
-// ── Embedding via Supabase Edge Function ──────────────────────────────────────
-// Uses the gte-small model (384 dimensions, no extra API key needed).
-//
-// SETUP REQUIRED (one time):
-//   1. Supabase Dashboard → Edge Functions → New Function → name it "embed"
-//   2. Paste the contents of supabase/functions/embed/index.ts
-//   3. Click Deploy
-//
-// The function must be deployed before ingestion or search will work.
+// ── Embedding (local, no external API needed) ─────────────────────────────────
 
 async function embedTexts(texts) {
-  const { data, error } = await supabase.functions.invoke('embed', {
-    body: { input: texts },
-  });
+  const embedder = await getEmbedder();
+  const results  = [];
 
-  if (error) {
-    console.error('[knowledge] embed function error — is the edge function deployed?', error);
-    throw new Error(
-      `Embedding failed: ${error.message}. ` +
-      'Make sure the "embed" edge function is deployed in your Supabase dashboard ' +
-      '(Edge Functions → New Function → paste supabase/functions/embed/index.ts → Deploy).'
-    );
+  for (const text of texts) {
+    const output = await embedder(text, { pooling: 'mean', normalize: true });
+    results.push(Array.from(output.data));
   }
 
-  if (!data?.embeddings) {
-    console.error('[knowledge] embed function returned unexpected response:', data);
-    throw new Error('Embedding function returned no data. Check the edge function logs in your Supabase dashboard.');
-  }
-
-  return data.embeddings;
+  return results;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -111,13 +107,7 @@ async function ingestDocument(filename, text) {
   const chunks = chunkText(text);
   if (!chunks.length) throw new Error('No content to ingest after chunking.');
 
-  // Embed in batches of 20 (edge function concurrency limit)
-  const allEmbeddings = [];
-  for (let i = 0; i < chunks.length; i += 20) {
-    const batch = chunks.slice(i, i + 20);
-    const embeddings = await embedTexts(batch);
-    allEmbeddings.push(...embeddings);
-  }
+  const allEmbeddings = await embedTexts(chunks);
 
   const rows = chunks.map((content, i) => ({
     document_id: doc.id,
