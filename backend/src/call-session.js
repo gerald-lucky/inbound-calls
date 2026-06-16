@@ -177,8 +177,8 @@ class CallSession {
     // Runs in parallel with the RAG search below, saving the WS handshake round-trip.
     this._tts.connect().catch(() => {});
 
-    // Per-utterance RAG: emit a hold phrase while we search, then pass context to LLM
-    await this._llm.injectUtteranceContext(text, signal, () => this._speakSentence('Let me check that for you.'));
+    // Per-utterance RAG: inject relevant KB context silently (no hold phrase)
+    await this._llm.injectUtteranceContext(text, signal);
 
     const onSentence = async (sentence) => {
       if (signal.aborted) return;

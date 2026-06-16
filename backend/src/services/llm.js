@@ -143,17 +143,15 @@ class LLMService extends EventEmitter {
    * @param {AbortSignal} signal
    * @param {Function} onHoldPhrase - async callback to speak a brief hold phrase
    */
-  async injectUtteranceContext(utterance, signal, onHoldPhrase) {
+  async injectUtteranceContext(utterance, signal) {
     this._utteranceRagContext = '';
     if (!this._agentConfigId || signal?.aborted) return;
-    // Skip KB search for very short utterances (greetings, yes/no, etc.)
-    if (utterance.trim().split(/\s+/).length < 5) return;
+    // Skip KB search for short utterances (greetings, yes/no, names, etc.)
+    if (utterance.trim().split(/\s+/).length < 6) return;
     try {
       const ctx = await rag.buildContext(utterance, this._agentConfigId, 3);
       if (ctx && !signal?.aborted) {
-        // Only emit hold phrase when we actually have KB results to surface
-        await onHoldPhrase();
-        this._utteranceRagContext = ctx;
+        this._utteranceRagContext = ctx; // inject silently — no hold phrase
       }
     } catch {
       this._utteranceRagContext = '';
@@ -178,7 +176,7 @@ class LLMService extends EventEmitter {
       this._utteranceRagContext  ? `\n\n${this._utteranceRagContext}`  : '',
       '\n\nIMPORTANT: Keep responses short and conversational (2-4 sentences max). Avoid lists or markdown — speak naturally as this is a phone call.' +
       '\nYou speak English and Spanish only. If the caller speaks Spanish, switch to Spanish immediately and continue the entire call in Spanish. If the caller speaks any other language, politely inform them in English that you can only assist in English or Spanish, and ask which they prefer.' +
-      '\nWhenever you are about to call any tool, first say a brief hold phrase in whatever language you are speaking — then call the tool.' +
+      '\nOnly when calling lookup_resident or get_payment_history, say a brief natural hold phrase first (e.g. "Let me pull up your account." or "One moment while I check that."). Do not say a hold phrase for generate_cashpay_code or for anything else.' +
       '\nWhen a caller spells out their name letter by letter (e.g. "J-O-S-E" or "M, A, R, I, A"), reconstruct the full name from those letters and pass it to the lookup tool — do not pass the individual letters.' +
       '\nIf a caller gives their name and the lookup fails, ask them to spell it letter by letter. After they spell it, attempt the lookup again with the reconstructed spelling.' +
       '\nIf a name still cannot be found after spelling confirmation, ask for their unit or lot number as an alternative.' +
