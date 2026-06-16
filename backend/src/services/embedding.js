@@ -1,34 +1,34 @@
 'use strict';
 
-// Local embedding via @xenova/transformers (Xenova/gte-small, 384 dims).
-// Model is downloaded once (~21 MB, quantized) to ~/.cache/huggingface/hub/
-// and reused on subsequent runs. No API key or external service required.
+// OpenAI text-embedding-3-small with dimensions=384 so the existing
+// pgvector column (vector(384)) requires no schema change.
+// Requires OPENAI_API_KEY in the environment.
 
-let extractor = null;
+const OpenAI = require('openai');
 
-async function getExtractor() {
-  if (extractor) return extractor;
-  const { pipeline } = await import('@xenova/transformers');
-  console.log('[embedding] Loading Xenova/gte-small (downloads ~21 MB on first run)…');
-  extractor = await pipeline('feature-extraction', 'Xenova/gte-small', { quantized: true });
-  console.log('[embedding] Model ready');
-  return extractor;
+let _client = null;
+function client() {
+  if (!_client) _client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return _client;
 }
 
 async function embed(text) {
-  const model = await getExtractor();
-  const out   = await model(text, { pooling: 'mean', normalize: true });
-  return Array.from(out.data);
+  const res = await client().embeddings.create({
+    model:      'text-embedding-3-small',
+    input:      text.replace(/\n/g, ' '),
+    dimensions: 384,
+  });
+  return res.data[0].embedding;
 }
 
 async function embedBatch(texts) {
-  const model = await getExtractor();
-  const results = [];
-  for (const text of texts) {
-    const out = await model(text, { pooling: 'mean', normalize: true });
-    results.push(Array.from(out.data));
-  }
-  return results;
+  const res = await client().embeddings.create({
+    model:      'text-embedding-3-small',
+    input:      texts.map((t) => t.replace(/\n/g, ' ')),
+    dimensions: 384,
+  });
+  // API returns embeddings in the same order as inputs
+  return res.data.map((item) => item.embedding);
 }
 
 module.exports = { embed, embedBatch };
