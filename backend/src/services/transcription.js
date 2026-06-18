@@ -135,7 +135,7 @@ class TranscriptionService extends EventEmitter {
       const form = new FormData();
       form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
       form.append('model_id', 'scribe_v2');
-      // No language_code — let Scribe auto-detect so Spanish, Hindi, etc. are handled correctly
+      form.append('language_code', 'en');   // force English — prevents agent-voice echo from being auto-detected as another language
 
       const res = await fetch(SCRIBE_URL, {
         method:  'POST',

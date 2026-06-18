@@ -214,6 +214,9 @@ class CallSession {
     if (!sentence.trim()) return;
     try {
       if (!this._tts.speaking) {
+        // Clear any audio Twilio has buffered from the previous turn before
+        // sending new audio — prevents old and new responses from overlapping.
+        this._clearTwilioBuffer();
         await this._tts.connect();
         this._isSpeaking = true;
       }

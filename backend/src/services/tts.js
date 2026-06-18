@@ -5,7 +5,7 @@ const { EventEmitter } = require('events');
 
 // ElevenLabs TTS streaming WebSocket — ulaw_8000 output matches Twilio's format
 const TTS_URL = (voiceId) =>
-  `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?output_format=ulaw_8000`;
+  `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?output_format=ulaw_8000&model_id=eleven_turbo_v2_5`;
 
 /**
  * TTSService streams text to ElevenLabs TTS and emits audio chunks in the
@@ -71,6 +71,7 @@ class TTSService extends EventEmitter {
           generation_config: {
             chunk_length_schedule: [50, 90, 120, 150],
           },
+          language_code: 'en',   // lock to English regardless of input text
           xi_api_key: apiKey,
         }));
 
