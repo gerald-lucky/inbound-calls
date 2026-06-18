@@ -71,7 +71,6 @@ class TTSService extends EventEmitter {
           generation_config: {
             chunk_length_schedule: [50, 90, 120, 150],
           },
-          language_code: 'en',   // lock to English regardless of input text
           xi_api_key: apiKey,
         }));
 

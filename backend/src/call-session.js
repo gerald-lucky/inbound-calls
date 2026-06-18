@@ -148,12 +148,14 @@ class CallSession {
 
     this._tts.on('done', () => {
       this._isSpeaking = false;
+      this._transcription.setAgentSpeaking(false);
       console.log('[call-session] Agent finished speaking');
     });
 
     this._tts.on('error', (err) => {
       console.error('[call-session] TTS error:', err.message);
       this._isSpeaking = false;
+      this._transcription.setAgentSpeaking(false);
     });
   }
 
@@ -202,11 +204,13 @@ class CallSession {
     try {
       await this._tts.connect();
       this._isSpeaking = true;
+      this._transcription.setAgentSpeaking(true);
       this._tts.sendText(text);
       this._tts.flush();
     } catch (err) {
       console.error('[call-session] Speak error:', err.message);
       this._isSpeaking = false;
+      this._transcription.setAgentSpeaking(false);
     }
   }
 
@@ -219,6 +223,7 @@ class CallSession {
         this._clearTwilioBuffer();
         await this._tts.connect();
         this._isSpeaking = true;
+        this._transcription.setAgentSpeaking(true);
       }
       this._tts.sendText(sentence);
     } catch (err) {

@@ -6,7 +6,8 @@ const SCRIBE_URL        = 'https://api.elevenlabs.io/v1/speech-to-text';
 const SAMPLE_RATE       = 8000;
 const SILENCE_MS        = 1000;                  // flush after 1 s of silence
 const MIN_SPEECH_BYTES  = SAMPLE_RATE * 0.3;    // ignore clips shorter than 300 ms
-const SILENCE_RMS_THRESHOLD = 1500;             // raised: phone calls have background noise + agent echo
+const SILENCE_RMS_THRESHOLD       = 1500;  // baseline: phone background noise
+const AGENT_SPEAKING_RMS_THRESHOLD = 3200;  // raised while agent is speaking to suppress echo
 const MIN_BARGE_FRAMES  = 5;                    // require ~100ms of sustained speech before barge-in fires
 
 // ─── µ-law helpers ────────────────────────────────────────────────────────────
@@ -71,7 +72,16 @@ class TranscriptionService extends EventEmitter {
     this._silenceTimer     = null;
     this._speaking         = false;
     this._connected        = false;
-    this._speechFrameCount = 0; // consecutive above-threshold frames (barge-in debounce)
+    this._speechFrameCount = 0;
+    this._agentSpeaking    = false; // raised RMS threshold while agent TTS is playing
+  }
+
+  /**
+   * Call with true when agent TTS starts, false when it ends.
+   * While true the RMS threshold is raised to suppress echo.
+   */
+  setAgentSpeaking(active) {
+    this._agentSpeaking = active;
   }
 
   /**
@@ -90,7 +100,8 @@ class TranscriptionService extends EventEmitter {
   sendAudio(buffer) {
     if (!this._connected) return;
 
-    const silent = rms(buffer) < SILENCE_RMS_THRESHOLD;
+    const threshold = this._agentSpeaking ? AGENT_SPEAKING_RMS_THRESHOLD : SILENCE_RMS_THRESHOLD;
+    const silent = rms(buffer) < threshold;
 
     if (!silent) {
       this._speechFrameCount++;
@@ -135,7 +146,7 @@ class TranscriptionService extends EventEmitter {
       const form = new FormData();
       form.append('file', new Blob([wav], { type: 'audio/wav' }), 'utterance.wav');
       form.append('model_id', 'scribe_v2');
-      form.append('language_code', 'en');   // force English — prevents agent-voice echo from being auto-detected as another language
+      // No language_code — Scribe auto-detects English and Spanish (bilingual support)
 
       const res = await fetch(SCRIBE_URL, {
         method:  'POST',
@@ -168,6 +179,7 @@ class TranscriptionService extends EventEmitter {
     this._speaking         = false;
     this._connected        = false;
     this._speechFrameCount = 0;
+    this._agentSpeaking    = false;
   }
 }
 

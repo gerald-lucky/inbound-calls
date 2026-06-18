@@ -438,6 +438,7 @@ class LLMService extends EventEmitter {
       this._callerContext ? `\n\n## Caller account context (pre-fetched by phone number)\n${this._callerContext}` : '',
       verificationStatus,
       '\n\n## Runtime reminders' +
+      '\n- Respond in whatever language the caller is using. If they speak Spanish, reply in Spanish. If English, reply in English. Follow any mid-call language switch immediately.' +
       '\n- Keep responses to 2–4 sentences. No lists or markdown — speak naturally for phone.' +
       '\n- Say a brief hold phrase before every tool call (e.g. "One moment while I look that up.").' +
       '\n- When a caller spells their name letter by letter (e.g. "J-O-S-E"), reconstruct the full name before calling lookup_resident.' +
