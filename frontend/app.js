@@ -79,7 +79,11 @@ async function loadDashboard() {
       btn.addEventListener('click', () => openTranscript(btn.dataset.id));
     });
   } catch (err) {
-    el.innerHTML = `<p class="empty">Error: ${esc(err.message)}</p>`;
+    const isNetworkErr = /fetch failed|Failed to fetch|NetworkError/i.test(err.message);
+    const hint = isNetworkErr
+      ? ' — backend cannot reach the database. Check <a href="/api/health" target="_blank">/api/health</a> and verify SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in Railway.'
+      : '';
+    el.innerHTML = `<p class="empty">Error: ${esc(err.message)}${hint}</p>`;
   }
 }
 

@@ -31,6 +31,31 @@ app.use(express.urlencoded({ extended: false }));
 
 app.use(express.static(path.join(__dirname, '../../frontend')));
 
+app.get('/api/health', async (_req, res) => {
+  const { createClient } = require('@supabase/supabase-js');
+  const checks = {
+    supabase_url:  !!process.env.SUPABASE_URL,
+    supabase_key:  !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    server_url:    !!process.env.SERVER_URL,
+  };
+  let supabase_reachable = false;
+  let supabase_error = null;
+  if (checks.supabase_url && checks.supabase_key) {
+    try {
+      const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+      const { error } = await sb.from('calls').select('id').limit(1);
+      supabase_reachable = !error;
+      if (error) supabase_error = error.message;
+    } catch (err) {
+      supabase_error = err.message;
+    }
+  } else {
+    supabase_error = 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY env var is missing';
+  }
+  const ok = checks.supabase_url && checks.supabase_key && supabase_reachable;
+  res.status(ok ? 200 : 503).json({ ok, checks, supabase_reachable, supabase_error });
+});
+
 app.use('/incoming-call',     incomingCallRoute);
 app.use('/api/agent-configs', agentConfigsRoute);
 app.use('/api/calls',         callsRoute);
